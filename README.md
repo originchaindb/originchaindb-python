@@ -109,7 +109,14 @@ Use `db.sql.execute(...)` for execution results and `db.sql_one(...)` for one ro
 - Date/time infinity and interval values remain exact strings. An interval such as `"1 year 2 mons 3 days 04:05:06"` is not collapsed into a `timedelta`; legacy row interval values can still be integer milliseconds.
 - For an SQL column explicitly marked `double precision`, `real`, `float4` or `float8`, `"NaN"`, `"Infinity"` and `"-Infinity"` become Python floats. Other values are unchanged. Without that metadata, the SDK preserves strings; `rows.get()` has no type envelope and preserves its JSON values too.
 
-These rules preserve values across engine versions; they do not enable server features. Current compatibility acceptance confirms projected GROUP BY rows and microsecond SQL literals. The tested engine still stores newly declared timestamp/interval table columns at millisecond precision and rejects the special-value casts, so stored microsecond and special-value acceptance remains pending.
+These rules preserve values across engine versions; they do not enable server
+features. The 25 October development-engine test passed projected GROUP BY
+results, microsecond SQL literals and typed floating-point special values with
+both clients. Earlier deployed-engine checks rejected the special-value casts;
+the development result does not establish that your server has received those
+changes. Stored microsecond timestamps, calendar intervals and their recovery
+compatibility remain under development. New storage formats are not enabled by
+installing this SDK.
 
 For row APIs and batches:
 
@@ -217,6 +224,13 @@ with OriginChain.from_env() as db:
 Use service or query-administrator credentials without database-user impersonation headers. Supported `(minutes, bucket_seconds)` pairs are `(60, 60)`, `(1440, 600)` and `(10080, 3600)`. Metrics are process-local and reset on restart. Idle latency is `None`; timestamps are Unix milliseconds. The response uses typed dictionaries and preserves integer counts.
 
 ## Compatibility and development
+
+The 25 October 2026 development-source check installed this client into a fresh
+consumer and passed SQL, graph, vector, full-text search, diagnostics and query
+metrics against an ephemeral test engine. This is a tested development candidate;
+it does not certify a production deployment or publish a package. See
+[verification details](validation/DEVELOPMENT.md) and the
+[SDK support matrix](https://github.com/originchaindb/.github/blob/main/SDK-SUPPORT.md).
 
 CI tests Python 3.9, 3.12 and 3.14 on Linux, plus Python 3.12 on Windows and macOS. Each job builds the wheel and verifies it in a fresh environment. Live database verification is a separate, explicitly configured workflow. The `0.x` API can change before 1.0.
 
