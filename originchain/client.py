@@ -1,0 +1,781 @@
+"""Synchronous client. Shared operations also have async counterparts.
+
+The typed namespaces also have async counterparts; keep transport behavior
+consistent with :mod:`async_client` when adding methods.
+"""
+
+# httpx.Response.json() returns `Any`, which `mypy --strict` flags at
+# every `return resp.json()` even when the method's declared return
+# type is correct at runtime. Disable that single check at file
+# scope rather than litter every wire method with `# type: ignore`
+# pragmas — the runtime types ARE accurate; mypy just can't see
+# through the third-party Response type into the JSON body.
+# mypy: disable-error-code="no-any-return"
+
+from __future__ import annotations
+
+import json as _json
+import os
+import time
+import uuid
+import warnings
+from typing import Any, Iterable, List, Literal, Mapping, Optional, Sequence
+
+import httpx
+from importlib.util import find_spec
+
+# Auto-enable HTTP/2 if the optional `h2` package is installed. With ALPN
+# now advertised by the engine, a persistent client can multiplex many
+# requests over one TCP+TLS connection instead of paying a fresh
+# handshake (~300 ms from outside the engine's region) on every call.
+# `pip install originchain[http2]` pulls in `h2`; bare `pip install
+# originchain` keeps HTTP/1.1 so existing installs don't break.
+_HTTP2_AVAILABLE = find_spec("h2") is not None
+
+from . import _diagnostics as _diag
+from . import _retry
+from ._identity import identity_headers
+from ._query_metrics import QueryMetricsResponse, _query_metrics_params
+from .errors import (
+    OCAuthError,
+    OCError,
+    OCNotFoundError,
+    OCPaymentRequiredError,
+    OCRateLimitedError,
+    OCReplicationDegraded,
+    OCServerError,
+    OCValidationError,
+)
+from .models import (
+    DijkstraResult,
+    FtsHit,
+    GraphBfsHit,
+    GraphPath,
+    Neighbor,
+    SqlResponse,
+    SqlSelect,
+    TenantUsage,
+    VectorHit,
+    _decode_sql_response,
+)
+
+
+# Default behaviour - override per-call if needed.
+DEFAULT_TIMEOUT_S = 30.0
+DEFAULT_MAX_RETRIES = 3
+# How long an idle pooled connection is kept for reuse. httpx's default is
+# 5 s, so an application calling every few seconds re-opened TCP + TLS on
+# most calls - two extra network round trips each time. OriginChain never
+# closes an idle keep-alive connection itself; the shortest idle limit on
+# the path is the network load balancer's 350 s, so stay below it.
+DEFAULT_KEEPALIVE_EXPIRY_S = 300.0
+MAX_KEEPALIVE_EXPIRY_S = 340.0
+
+
+def _pool_limits(keepalive_expiry: float) -> httpx.Limits:
+    """Connection-pool limits with a longer idle keep-alive.
+
+    Passes httpx's default pool sizes explicitly: ``httpx.Limits`` with only
+    ``keepalive_expiry`` set would make the pool unbounded."""
+    expiry = max(0.0, min(float(keepalive_expiry), MAX_KEEPALIVE_EXPIRY_S))
+    return httpx.Limits(
+        max_connections=100,
+        max_keepalive_connections=20,
+        keepalive_expiry=expiry,
+    )
+RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _new_idempotency_key() -> str:
+    """Generate a key for endpoints that implement deduplication.
+
+    A key alone does not make arbitrary SQL or writes safe to replay.
+    """
+    return uuid.uuid4().hex
+
+
+class _Schemas:
+    """``db.schemas.*`` namespace."""
+
+    def __init__(self, parent: "OriginChain") -> None:
+        self._p = parent
+
+    def list(self) -> list[str]:
+        return self._p._request("GET", f"/v1/tenants/{self._p.tenant}/schemas").json()
+
+    def get(self, schema: str) -> str:
+        return self._p._request("GET", f"/v1/tenants/{self._p.tenant}/schemas/{schema}").text
+
+    def register(self, toml_source: str) -> dict[str, Any]:
+        return self._p._request(
+            "POST",
+            f"/v1/tenants/{self._p.tenant}/schemas",
+            content=toml_source.encode("utf-8"),
+            headers={"Content-Type": "text/plain"},
+        ).json()
+
+
+class _Rows:
+    """``db.rows.*`` namespace."""
+
+    def __init__(self, parent: "OriginChain") -> None:
+        self._p = parent
+
+    def get(self, schema: str, pk: str) -> dict[str, Any]:
+        """Return row JSON unchanged, including temporal text or legacy milliseconds.
+
+        This endpoint has no column-type envelope: strings such as ``NaN``
+        are preserved rather than guessed to be floating-point values.
+        """
+        return self._p._request("GET", f"/v1/tenants/{self._p.tenant}/rows/{schema}/{pk}").json()
+
+    def put(
+        self,
+        schema: str,
+        row: Mapping[str, Any],
+        *,
+        expect_insert: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        params = {"expect": "insert"} if expect_insert else None
+        # Explicit caller key wins; otherwise `_request` auto-fills.
+        headers = (
+            {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        )
+        return self._p._request(
+            "POST",
+            f"/v1/tenants/{self._p.tenant}/rows/{schema}",
+            json=row,
+            params=params,
+            headers=headers,
+        ).json()
+
+    def put_batch(
+        self,
+        schema: str,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        expect_insert: bool = False,
+        idempotency_key: Optional[str] = None,
+        chunk: int = 1000,
+    ) -> int:
+        """Upload `rows` in chunks of `chunk`. Returns total rows accepted.
+
+        Each chunk gets a deterministic per-chunk key derived from a single
+        base UUID - so a partial-retry of the same `put_batch` call hits
+        the same cache slots and the engine dedupes correctly. The caller
+        can pass a stable `idempotency_key` to extend dedup across process
+        restarts; otherwise we mint a fresh base for this single call."""
+        if isinstance(chunk, bool) or not isinstance(chunk, int) or chunk <= 0:
+            raise ValueError("chunk must be a positive integer")
+        params = {"expect": "insert"} if expect_insert else None
+        base_idem = idempotency_key or _new_idempotency_key()
+        total = 0
+        chunk_no = 0
+        chunk_buf: list[Mapping[str, Any]] = []
+        for r in rows:
+            chunk_buf.append(r)
+            if len(chunk_buf) >= chunk:
+                total += self._send_batch(schema, chunk_buf, params, base_idem, chunk_no)
+                chunk_no += 1
+                chunk_buf = []
+        if chunk_buf:
+            total += self._send_batch(
+                schema, chunk_buf, params, base_idem, chunk_no
+            )
+        return total
+
+    def _send_batch(
+        self,
+        schema: str,
+        rows: list[Mapping[str, Any]],
+        params: Optional[dict[str, Any]],
+        base_idem: str,
+        chunk_no: int,
+    ) -> int:
+        resp = self._p._request(
+            "POST",
+            f"/v1/tenants/{self._p.tenant}/rows/{schema}/_batch",
+            json=list(rows),
+            params=params,
+            headers={"Idempotency-Key": f"{base_idem}-c{chunk_no}"},
+        )
+        return resp.json().get("inserted", 0)
+
+
+from ._namespaces import (
+    _AdminNamespace,
+    _FtsNamespace,
+    _GraphNamespaceExtended,
+    _SqlNamespace,
+    _VectorNamespace,
+)
+
+
+class _Graph(_GraphNamespaceExtended):
+    """``db.graph.*`` namespace. Wraps the five graph endpoints under
+    ``/v1/tenants/:t/graph/:schema/{neighbors,reverse,bfs,path,dijkstra}``
+    plus the typed-namespace v1 extensions (``k_shortest`` /
+    ``random_walk`` / ``louvain`` / ``pagerank`` / ``label_propagation``
+    / ``betweenness`` / ``shortest_path``) mixed in from
+    :class:`_GraphNamespaceExtended`. Each method returns a typed
+    dataclass / dict / list instead of raw JSON."""
+
+    def __init__(self, parent: "OriginChain") -> None:
+        self._p = parent
+
+    def neighbors(self, schema: str, *, rel: str, pk: str) -> List[Neighbor]:
+        params = {"rel": rel, "pk": pk}
+        pks = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/graph/{schema}/neighbors",
+            params=params,
+        ).json()
+        return [Neighbor(pk=str(p), depth=1) for p in pks]
+
+    def reverse_neighbors(self, schema: str, *, rel: str, pk: str) -> List[Neighbor]:
+        params = {"rel": rel, "pk": pk}
+        pks = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/graph/{schema}/reverse",
+            params=params,
+        ).json()
+        return [Neighbor(pk=str(p), depth=1) for p in pks]
+
+    def bfs(
+        self,
+        schema: str,
+        *,
+        rel: str,
+        pk: str,
+        max_depth: int = 3,
+    ) -> List[GraphBfsHit]:
+        params = {"rel": rel, "pk": pk, "max_depth": str(max_depth)}
+        hits = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/graph/{schema}/bfs",
+            params=params,
+        ).json()
+        return [GraphBfsHit._from_payload(h) for h in hits]
+
+    def path(
+        self,
+        schema: str,
+        *,
+        rel: str,
+        src: str,
+        dst: str,
+        max_depth: int = 3,
+    ) -> GraphPath:
+        params = {"rel": rel, "src": src, "dst": dst, "max_depth": str(max_depth)}
+        body = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/graph/{schema}/path",
+            params=params,
+        ).json()
+        return GraphPath(reachable=bool(body.get("reachable", False)))
+
+    def dijkstra(
+        self,
+        schema: str,
+        *,
+        rel: str,
+        src: str,
+        dst: str,
+        weights: Mapping[str, float],
+    ) -> DijkstraResult:
+        # Backend reads `q.weights_json` as a query parameter (NOT a body).
+        # See preview_endpoints.rs::graph_dijkstra.
+        params = {
+            "rel": rel,
+            "src": src,
+            "dst": dst,
+            "weights_json": _json.dumps(dict(weights)),
+        }
+        body = self._p._request(
+            "GET",
+            f"/v1/tenants/{self._p.tenant}/graph/{schema}/dijkstra",
+            params=params,
+        ).json()
+        cost = body.get("cost")
+        return DijkstraResult(cost=None if cost is None else float(cost))
+
+
+class OriginChain:
+    """Synchronous OriginChain client.
+
+    Use :meth:`from_env` for the standard env-var bootstrap, or pass
+    ``base_url`` / ``bearer`` / ``tenant`` directly for tests."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        bearer: str,
+        tenant: str,
+        timeout: float = DEFAULT_TIMEOUT_S,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        max_retry_time: float = _retry.DEFAULT_MAX_RETRY_TIME,
+        verify: bool | str = True,
+        user_agent: Optional[str] = None,
+        keepalive_expiry: float = DEFAULT_KEEPALIVE_EXPIRY_S,
+        diagnostics: bool = False,
+        db_user: Optional[str] = None,
+        db_key: Optional[str] = None,
+    ) -> None:
+        _retry.validate_options(max_retries, max_retry_time)
+        identity = identity_headers(db_user, db_key)
+        self.base_url = base_url.rstrip("/")
+        self.bearer = bearer
+        self.tenant = tenant
+        self.max_retries = max_retries
+        self.max_retry_time = max_retry_time
+        # Opt-in client diagnostics (off by default); see `_diagnostics`.
+        self._diagnostics: _diag.SyncReporter | None = (
+            _diag.SyncReporter(self._send_diagnostics) if diagnostics else None
+        )
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            timeout=timeout,
+            verify=verify,
+            http2=_HTTP2_AVAILABLE,
+            limits=_pool_limits(keepalive_expiry),
+            headers={
+                **identity,
+                "Authorization": f"Bearer {bearer}",
+                "User-Agent": user_agent or "originchaindb-python/0.11.0.dev0",
+            },
+        )
+        self.schemas = _Schemas(self)
+        self.rows = _Rows(self)
+        self.graph = _Graph(self)
+        # Typed-namespace v1 surfaces. `self.sql` is a callable
+        # namespace so `client.sql("...")` (legacy) AND
+        # `client.sql.query("...")` / `client.sql.execute("...")`
+        # both work off the same attribute.
+        self.sql = _SqlNamespace(self)
+        self.vector = _VectorNamespace(self)
+        self.fts = _FtsNamespace(self)
+        # 0.5: admin surface for the per-tenant replication-mode config
+        # routes that land under `/v1/admin/*` (not under `/v1/tenants/*`).
+        # Routes through the same `_request` helper; auth is whatever
+        # the parent client was constructed with.
+        self.admin = _AdminNamespace(self)
+
+    @classmethod
+    def from_env(cls, **kwargs: Any) -> "OriginChain":
+        """Build a client from ``OC_BASE_URL``, ``OC_BEARER``, ``OC_TENANT``.
+
+        Raises :class:`OCError` if any are missing - callers should set
+        them via their secrets manager, not commit them."""
+        try:
+            base_url = os.environ["OC_BASE_URL"]
+            bearer = os.environ["OC_BEARER"]
+            tenant = os.environ["OC_TENANT"]
+        except KeyError as e:
+            raise OCError(f"missing required env var: {e.args[0]}") from None
+        return cls(base_url=base_url, bearer=bearer, tenant=tenant, **kwargs)
+
+    # ── Top-level convenience ─────────────────────────────────────────
+
+    def health(self) -> dict[str, Any]:
+        return self._request("GET", "/health").json()
+
+    def query(self, plan: dict[str, Any]) -> list[Any]:
+        """Structured plan execution. The plan format is in the engine docs."""
+        return self._request(
+            "POST", f"/v1/tenants/{self.tenant}/query", json=plan
+        ).json()
+
+    def query_metrics(
+        self, minutes: int = 60, bucket_seconds: int = 60,
+    ) -> QueryMetricsResponse:
+        """Read query completion counts and mean latency for this process.
+
+        Supported minute/bucket-second pairs are 60/60, 1440/600 and
+        10080/3600. Results retain the JSON field names; timestamps are Unix
+        milliseconds and idle buckets have ``mean_latency_ms=None``. Use
+        ``observed_seconds`` for throughput, as coverage may be partial.
+        Restart clears history; this is not an aggregate across replicas.
+
+        Requires a tenant service credential or query administrator.
+        Impersonated database-user headers are refused by the server (403).
+        Uses this client's timeout, retries, identity and error handling.
+        """
+        response = self._request(
+            "GET", f"/v1/tenants/{self.tenant}/query-metrics",
+            params=_query_metrics_params(minutes, bucket_seconds),
+        )
+        return response.json()
+
+    def usage(self) -> TenantUsage:
+        """Live usage counters + the tenant's compute configuration.
+
+        The response ``tier`` is the neutral configuration slug
+        (``entry`` / ``standard`` / ``advanced`` / ``custom``); the
+        internal weather codename is never exposed. Prefer
+        :attr:`TenantUsage.configuration` for the full spec + list
+        price. Both are ``None`` in legacy per-addon mode."""
+        body = self._request(
+            "GET", f"/v1/tenants/{self.tenant}/usage"
+        ).json()
+        return TenantUsage._from_payload(body)
+
+    # ── SQL ───────────────────────────────────────────────────────────
+
+    def _sql_callable_impl(
+        self, query: str, params: Optional[Sequence[Any]] = None, *,
+        retry_safe: bool = False, idempotency_key: Optional[str] = None,
+    ) -> SqlResponse:
+        """Implementation backing the legacy ``client.sql("...")`` callable.
+
+        Lives on the client (not on the namespace) because the typed
+        ``client.sql`` attribute is now a :class:`_SqlNamespace`
+        instance; the namespace's ``__call__`` delegates here so the
+        pre-namespace API (``client.sql("...")`` returning a
+        :class:`SqlResponse`) keeps its exact shape.
+
+        Returns a tagged-union dataclass discriminated on ``kind``:
+
+        - ``SqlSelect``: server ran the SELECT and returned rows.
+        - ``SqlInsert``: preserves the server's ``inserted`` count when present.
+        - ``SqlDelete``: preserves ``rows_affected`` and ``rows_buffered``.
+
+        Older engines may only translate writes. An absent count does not
+        confirm execution, and the SDK never replays a write automatically.
+
+        See ``backend/crates/oc-http/src/preview_endpoints.rs::sql_exec``
+        for the full contract."""
+        from ._namespaces import _positional_params
+
+        payload: dict[str, Any] = {"sql": query}
+        if params is not None:
+            payload["params"] = _positional_params(params)
+        body = self._request(
+            "POST",
+            f"/v1/tenants/{self.tenant}/sql",
+            json=payload,
+            retry_safe=retry_safe,
+            headers={"Idempotency-Key": idempotency_key} if idempotency_key is not None else None,
+        ).json()
+        return _decode_sql_response(body)
+
+    def sql_one(
+        self, query: str, params: Optional[Sequence[Any]] = None, *,
+        retry_safe: bool = False, idempotency_key: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Convenience: run a SELECT and return the first row (or
+        ``None`` if no rows). Raises :class:`OCValidationError` if the
+        statement isn't a SELECT - there's no "first" of an INSERT or
+        DELETE translation."""
+        resp = self._sql_callable_impl(
+            query, params, retry_safe=retry_safe, idempotency_key=idempotency_key
+        )
+        if not isinstance(resp, SqlSelect):
+            raise OCValidationError(
+                f"sql_one expected SELECT, got {type(resp).__name__}"
+            )
+        if not resp.rows:
+            return None
+        first = resp.rows[0]
+        if not isinstance(first, dict):
+            return {"value": first}
+        return dict(first)
+
+    # ── Vector ────────────────────────────────────────────────────────
+
+    def vector_put(
+        self,
+        table: str,
+        *,
+        id: str,
+        embedding: list[float],
+        dim: int,
+        metric: str = "cosine",
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """Upsert a single vector. ``dim`` is required because the
+        substrate validates the embedding length matches the table's
+        configured dimensionality on every put. ``metric`` is one of
+        ``"cosine"`` / ``"dot"`` / ``"l2"`` and is checked against the
+        first put's choice for the table - changing it after the index
+        is built returns 400."""
+        body: dict[str, Any] = {
+            "id": id,
+            "embedding": list(embedding),
+            "dim": dim,
+            "metric": metric,
+        }
+        if metadata is not None:
+            body["metadata"] = dict(metadata)
+        self._request(
+            "POST",
+            f"/v1/tenants/{self.tenant}/vector/{table}/put",
+            json=body,
+        )
+
+    def vector_topk(
+        self,
+        table: str,
+        *,
+        query: list[float],
+        k: int = 10,
+        dim: int,
+        metric: str = "cosine",
+        filter: Optional[Mapping[str, Any]] = None,
+        mode: Optional[Literal["fast", "high_recall"]] = None,
+    ) -> list[VectorHit]:
+        """Approximate-NN topk over a vector table.
+
+        ``mode`` selects the recall/latency profile: ``"fast"`` favours
+        latency, ``"high_recall"`` favours recall. When omitted the
+        server defaults to ``"high_recall"``. ``filter`` is a metadata
+        equality filter - non-empty filters force an HNSW + post-filter
+        codepath server-side."""
+        body: dict[str, Any] = {
+            "query": list(query),
+            "k": k,
+            "dim": dim,
+            "metric": metric,
+        }
+        if mode is not None:
+            body["mode"] = mode
+        if filter is not None:
+            body["filter"] = dict(filter)
+        hits = self._request(
+            "POST",
+            f"/v1/tenants/{self.tenant}/vector/{table}/topk",
+            json=body,
+        ).json()
+        return [VectorHit._from_payload(h) for h in hits]
+
+    # ── Full-text ─────────────────────────────────────────────────────
+
+    def fts_index(
+        self,
+        table: str,
+        field: str,
+        *,
+        doc_id: str,
+        text: str,
+    ) -> None:
+        """Index ``text`` under ``(table, field, doc_id)``. Per-tenant
+        per-field inverted index; subsequent calls with the same
+        ``doc_id`` overwrite."""
+        self._request(
+            "POST",
+            f"/v1/tenants/{self.tenant}/fts/{table}/{field}",
+            json={"doc_id": doc_id, "text": text},
+        )
+
+    def fts_search(
+        self,
+        table: str,
+        field: str,
+        *,
+        q: str,
+        mode: str = "boolean",
+        k: int = 10,
+    ) -> list[FtsHit]:
+        """Full-text search.
+
+        ``mode="boolean"`` (default) AND-matches all tokens and returns
+        unranked doc_ids. ``mode="bm25"`` returns the top-``k`` hits
+        ranked by BM25. ``mode="phrase"`` requires the tokens in order.
+
+        All three modes return :class:`FtsHit` for a uniform shape;
+        boolean / phrase set ``score=0.0`` since they don't rank."""
+        params: dict[str, str] = {"q": q, "mode": mode}
+        if mode == "bm25":
+            params["k"] = str(k)
+        body = self._request(
+            "GET",
+            f"/v1/tenants/{self.tenant}/fts/{table}/{field}",
+            params=params,
+        ).json()
+        if mode == "bm25":
+            return [FtsHit._from_ranked(h) for h in body]
+        # Boolean / phrase return List[str] of doc_ids.
+        return [FtsHit._from_doc_id(str(d)) for d in body]
+
+    # ── Lifecycle ─────────────────────────────────────────────────────
+
+    def close(self) -> None:
+        if self._diagnostics is not None:
+            self._diagnostics.close()  # sends what is queued first
+        self._client.close()
+
+    def flush_diagnostics(self) -> None:
+        """Send any queued diagnostics now (for example before a short-lived
+        process exits). A no-op when diagnostics are off. Never raises."""
+        if self._diagnostics is not None:
+            self._diagnostics.flush()
+
+    def _send_diagnostics(self, batch: list[dict[str, Any]]) -> None:
+        # Straight to the engine, not through `_request`: a report never
+        # reports itself, retries, or carries correlation headers.
+        self._client.post(
+            f"/v1/tenants/{self.tenant}/diagnostics",
+            json={"events": batch},
+            timeout=_diag.SEND_TIMEOUT_S,
+        )
+
+    def __enter__(self) -> "OriginChain":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    # ── Internal: retry + error mapping ───────────────────────────────
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict[str, Any]] = None,
+        json: Any = None,
+        content: Optional[bytes] = None,
+        headers: Optional[dict[str, str]] = None,
+        retry_safe: bool | None = None,
+    ) -> httpx.Response:
+        # A key only deduplicates endpoints that implement it; it does not
+        # authorize replay of arbitrary writes or SQL statements.
+        retries = self.max_retries if _retry.eligible(method, retry_safe) else 0
+        deadline = time.perf_counter() + self.max_retry_time
+        if method.upper() in _MUTATING_METHODS:
+            if headers is None:
+                headers = {"Idempotency-Key": _new_idempotency_key()}
+            elif not any(k.lower() == "idempotency-key" for k in headers):
+                headers = {**headers, "Idempotency-Key": _new_idempotency_key()}
+        # One logical request id per call, the same on every retry; the attempt
+        # number changes. The engine records both next to its own request id.
+        logical_id, headers = _diag.correlate(headers)
+        report = self._diagnostics
+        last_exc: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            started = time.perf_counter()
+            try:
+                resp = self._client.request(
+                    method,
+                    path,
+                    params=params,
+                    json=json,
+                    content=content,
+                    headers=_diag.with_attempt(headers, attempt + 1),
+                )
+            except httpx.RequestError as e:
+                last_exc = e
+                if report is not None:
+                    report.push(_diag.event(
+                        method=method, path=path, started=started,
+                        logical_request_id=logical_id, attempt=attempt + 1, failure=e,
+                    ))
+                network_wait = self._backoff(attempt)
+                if attempt < retries and network_wait < deadline - time.perf_counter():
+                    time.sleep(network_wait)
+                    if time.perf_counter() < deadline:
+                        continue
+                err = OCError(f"transport error: {e}")
+                err.logical_request_id = logical_id
+                raise err from e
+
+            request_id = _diag.engine_request_id(resp.headers.get("X-OC-Request-Id"))
+            if resp.status_code < 400:
+                if report is not None:
+                    report.push(_diag.event(
+                        method=method, path=path, started=started,
+                        logical_request_id=logical_id, attempt=attempt + 1,
+                        status=resp.status_code, request_id=request_id,
+                    ))
+                if resp.headers.get("X-OC-Replication", "").lower() == "degraded":
+                    warnings.warn(
+                        "leader returned 200 but follower(s) didn't ack within"
+                        " --sync-timeout-ms; write is durable but RPO=0 not met",
+                        OCReplicationDegraded,
+                        stacklevel=3,
+                    )
+                return resp
+
+            if report is not None:
+                report.push(_diag.event(
+                    method=method, path=path, started=started,
+                    logical_request_id=logical_id, attempt=attempt + 1,
+                    status=resp.status_code, request_id=request_id,
+                    code=_diag.error_code(_json_or_none(resp)),
+                ))
+            if resp.status_code in RETRYABLE_STATUSES and attempt < retries:
+                wait = self._retry_after(resp)
+                if wait is None:
+                    wait = self._backoff(attempt)
+                if wait < deadline - time.perf_counter():
+                    resp.close()
+                    time.sleep(wait)
+                    if time.perf_counter() < deadline:
+                        continue
+
+            try:
+                self._raise_for(resp)
+            except OCError as err:
+                err.request_id = request_id
+                err.logical_request_id = logical_id
+                raise
+        # _raise_for never returns; loop exhaustion only via transport.
+        raise OCError(f"request failed after retries: {last_exc}")
+
+    @staticmethod
+    def _backoff(attempt: int) -> float:
+        return _retry.backoff(attempt)
+
+    @staticmethod
+    def _retry_after(resp: httpx.Response) -> Optional[float]:
+        return _retry.retry_after(resp.headers.get("Retry-After"))
+
+    @staticmethod
+    def _raise_for(resp: httpx.Response) -> None:
+        body: Any
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+
+        msg = body.get("error") if isinstance(body, dict) else str(body)
+        status = resp.status_code
+
+        if status in (401, 403):
+            raise OCAuthError(msg or "unauthorized", status=status, body=body)
+        if status == 402:
+            # 402 body shape is the canonical addon-required envelope -
+            # see oc-http::entitlements::build_402_body.
+            addon_msg = (
+                body.get("msg")
+                if isinstance(body, dict)
+                else None
+            ) or msg or "payment required (add-on)"
+            raise OCPaymentRequiredError(addon_msg, status=status, body=body)
+        if status == 404:
+            raise OCNotFoundError(msg or "not found", status=status, body=body)
+        if status == 400:
+            raise OCValidationError(msg or "validation failed", status=status, body=body)
+        if status == 429:
+            retry_after = OriginChain._retry_after(resp)
+            raise OCRateLimitedError(
+                msg or "rate limited",
+                retry_after=1.0 if retry_after is None else retry_after,
+                status=status,
+                body=body,
+            )
+        if 500 <= status < 600:
+            raise OCServerError(msg or f"server error {status}", status=status, body=body)
+        raise OCError(msg or f"unexpected status {status}", status=status, body=body)
+
+
+def _json_or_none(resp: httpx.Response) -> Any:
+    try:
+        return resp.json()
+    except ValueError:  # not JSON (includes a body that is not valid UTF-8)
+        return None
+
+
+__all__ = ["OriginChain"]

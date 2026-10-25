@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "tenant_id": "synthetic-decoder-fixture",
+  "from": 1790000000000,
+  "to": 1790000060000,
+  "collection_started_at": 1790000000000,
+  "scope": "local-process",
+  "bucket_seconds": 60,
+  "retention_seconds": 604800,
+  "dropped_events": 4294967300,
+  "buckets": [
+    {
+      "at": 1790000000000,
+      "calls": 0,
+      "failed": 0,
+      "mean_latency_ms": null,
+      "observed_seconds": 60.0
+    },
+    {
+      "at": 1790000060000,
+      "calls": 4294967300,
+      "failed": 4294967299,
+      "mean_latency_ms": 12.5,
+      "observed_seconds": 60.0
+    }
+  ]
+}

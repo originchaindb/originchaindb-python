@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "now_unix": 1445412470,
+  "retry_after": [
+    {"value": null, "seconds": null},
+    {"value": "", "seconds": null},
+    {"value": "0", "seconds": 0},
+    {"value": "3", "seconds": 3},
+    {"value": " 12 ", "seconds": 12},
+    {"value": "0003", "seconds": 3},
+    {"value": "-1", "seconds": null},
+    {"value": "+1", "seconds": null},
+    {"value": "1.5", "seconds": null},
+    {"value": "1e3", "seconds": null},
+    {"value": "NaN", "seconds": null},
+    {"value": "Infinity", "seconds": null},
+    {"value": "tomorrow", "seconds": null},
+    {"value": "999999999999999999999999999999", "seconds": 1000000000000},
+    {"value": "Wed, 21 Oct 2015 07:28:00 GMT", "seconds": 10},
+    {"value": "Wed, 21 Oct 2015 07:27:00 GMT", "seconds": 0},
+    {"value": "Wednesday, 21-Oct-15 07:28:00 GMT", "seconds": 10},
+    {"value": "Wed Oct 21 07:28:00 2015", "seconds": 10}
+  ],
+  "methods": [
+    {"method": "GET", "retry_safe": null, "eligible": true},
+    {"method": "get", "retry_safe": null, "eligible": true},
+    {"method": "HEAD", "retry_safe": null, "eligible": true},
+    {"method": "OPTIONS", "retry_safe": null, "eligible": true},
+    {"method": "POST", "retry_safe": null, "eligible": false},
+    {"method": "PUT", "retry_safe": null, "eligible": false},
+    {"method": "PATCH", "retry_safe": null, "eligible": false},
+    {"method": "DELETE", "retry_safe": null, "eligible": false},
+    {"method": "POST", "retry_safe": true, "eligible": true},
+    {"method": "GET", "retry_safe": false, "eligible": false}
+  ],
+  "retryable_statuses": [429, 500, 502, 503, 504]
+}
