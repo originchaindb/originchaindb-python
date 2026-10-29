@@ -27,7 +27,7 @@ def test_metrics_preserves_wide_integers_null_and_wire_keys(mock_client, window)
         minutes, seconds = window or (60, 60)
         assert dict(request.url.params) == {"minutes": str(minutes), "bucket_seconds": str(seconds)}
         assert request.headers["Authorization"] == "Bearer test-bearer"
-        assert request.headers["User-Agent"] == "originchaindb-python/0.11.0.dev0"
+        assert request.headers["User-Agent"] == "originchaindb-python/0.11.0rc1"
         assert request.headers["x-oc-logical-request-id"]
         assert request.headers["x-oc-attempt"] == "1"
         assert not request.content

@@ -316,7 +316,7 @@ class AsyncOriginChain:
             headers={
                 **identity,
                 "Authorization": f"Bearer {bearer}",
-                "User-Agent": user_agent or "originchaindb-python/0.11.0.dev0",
+                "User-Agent": user_agent or "originchaindb-python/0.11.0rc1",
             },
         )
         self.schemas = _AsyncSchemas(self)

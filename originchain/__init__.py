@@ -126,4 +126,4 @@ __all__ = [
     "TenantUsage",
 ]
 
-__version__ = "0.11.0.dev0"
+__version__ = "0.11.0rc1"

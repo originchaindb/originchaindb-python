@@ -19,7 +19,7 @@ Start with the [runnable examples](examples/README.md). For setup, tests and pac
 
 ## Installation
 
-Requires Python 3.9 or later. This repository contains the unreleased `0.11.0.dev0` development version. Install its source in a virtual environment:
+Requires Python 3.9 or later. This repository contains the unreleased `0.11.0rc1` release candidate. Install its source in a virtual environment:
 
 ```sh
 git clone https://github.com/originchaindb/originchaindb-python.git
