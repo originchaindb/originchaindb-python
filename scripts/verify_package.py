@@ -134,6 +134,8 @@ def main() -> None:
         subprocess.run([str(python), "-m", "pip", "install", str(wheels[0])], check=True, cwd=tmp)
         subprocess.run([str(python), "-I", str(Path(__file__).resolve()), "--installed"],
                        check=True, cwd=tmp)
+        subprocess.run([str(python), "-I", str(root / "tests" / "test_examples.py")],
+                       check=True, cwd=tmp)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,19 @@ The `originchain` package provides synchronous and asynchronous clients for Orig
 
 [Documentation](https://originchaindb.com/docs/sdk/python) | [Changelog](CHANGELOG.md) | [Issues](https://github.com/originchaindb/originchaindb-python/issues) | [Other languages](https://github.com/originchaindb)
 
+## Repository structure
+
+| Path | Purpose |
+| --- | --- |
+| [`originchain/`](originchain/) | Synchronous and asynchronous clients, namespaces and typed models. |
+| [`tests/`](tests/) | SDK unit tests, example acceptance and optional live checks. |
+| [`examples/`](examples/) | Runnable SQL, full-text, vector and graph reads. |
+| [`scripts/`](scripts/) | Wheel verification and release tooling. |
+| [`validation/`](validation/) | Dated development verification notes. |
+| [`.github/workflows/`](.github/workflows/) | Runtime, operating-system and release workflows. |
+
+Start with the [runnable examples](examples/README.md). For setup, tests and package checks, see [Contributing](CONTRIBUTING.md).
+
 ## Installation
 
 Requires Python 3.9 or later. This repository contains the unreleased `0.11.0.dev0` development version. Install its source in a virtual environment:
