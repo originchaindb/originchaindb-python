@@ -2,13 +2,16 @@
 
 Changes to the OriginChainDB Python SDK. Earlier entries describe package versions published before this repository was created.
 
-## [Unreleased]
+## [0.11.0rc1] - Unreleased
 
 - Establish `originchaindb/originchaindb-python` as the maintained source repository.
 
 - Remove the synchronous and asynchronous `ask()` helpers. Use SQL, full-text search, vector search, or graph operations directly.
 - Remove the natural-language availability prerequisite from live and release verification. The four supported query families retain their live acceptance checks.
-- Mark development builds as `0.11.0.dev0`; previously published packages are unchanged.
+- Prepare `0.11.0rc1` as an unpublished release candidate. Previously published packages are unchanged.
+- Accept canonical stable and release-candidate versions in the release gate; reject development, local and post releases.
+- Require the maintained repository and Originchain-ops for release dispatch and reruns. GitHub release/tag creation remains an operations-maintainer step; the workflow token cannot create either.
+- Publication remains held. A candidate version and passing CI do not authorize registry upload.
 
 ## [0.10.0rc5] - 2026-10-25
 

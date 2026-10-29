@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Stable SDK version already committed on main (X.Y.Z)"
+        description: "Version already committed on main (X.Y.Z or X.Y.ZrcN)"
         required: true
         type: string
 
@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -39,9 +40,39 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   live:
-    needs: gate
-    uses: ./.github/workflows/e2e.yml
-    secrets: inherit
+    needs: [gate, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: package
+          path: dist
+      - name: Install the exact release wheel into a fresh consumer
+        run: |
+          python scripts/verify_package.py
+          python -m venv "$RUNNER_TEMP/python-live-consumer"
+          "$RUNNER_TEMP/python-live-consumer/bin/python" -m pip install dist/*.whl
+      - name: Verify the installed wheel against the supported test database
+        env:
+          OC_REQUIRE_LIVE: "1"
+          OC_BASE: ${{ secrets.OC_BASE }}
+          OC_BEARER: ${{ secrets.OC_BEARER }}
+          OC_TENANT: ${{ secrets.OC_TENANT }}
+          OC_DB_USER: ${{ secrets.OC_DB_USER }}
+          OC_DB_KEY: ${{ secrets.OC_DB_KEY }}
+          OC_NS: py_release_${{ github.run_id }}
+        run: |
+          "$RUNNER_TEMP/python-live-consumer/bin/python" -I tests/e2e_smoke.py
+          "$RUNNER_TEMP/python-live-consumer/bin/python" -I scripts/verify_query_metrics_live.py
+          "$RUNNER_TEMP/python-live-consumer/bin/python" -I scripts/verify_sql_delete_live.py
+          "$RUNNER_TEMP/python-live-consumer/bin/python" -I scripts/verify_sql_values_live.py
 
   package:
     needs: gate
@@ -67,7 +98,7 @@ jobs:
     timeout-minutes: 10
     environment: production-pypi
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -89,8 +120,28 @@ jobs:
       - name: Publish with configured trusted publisher
         if: steps.auth.outputs.token != 'true'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
-      - name: Record release and source tag
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Verify fresh registry installation matches the accepted wheel
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.gate.outputs.version }}
-        run: gh release create "v$RELEASE_VERSION" dist/* --target "$GITHUB_SHA" --title "Python SDK $RELEASE_VERSION" --notes-file RELEASE_NOTES.md
+        run: |
+          python -m pip download --only-binary :all: --no-deps --index-url https://pypi.org/simple --dest registry-dist "originchain==$RELEASE_VERSION"
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          built = list(Path('dist').glob('*.whl'))
+          fetched = list(Path('registry-dist').glob('*.whl'))
+          assert len(built) == len(fetched) == 1
+          assert built[0].name == fetched[0].name
+          assert hashlib.sha256(built[0].read_bytes()).digest() == hashlib.sha256(fetched[0].read_bytes()).digest(), 'Registry wheel differs from accepted bytes'
+          PY
+          python scripts/verify_package.py registry-dist/*.whl
+      # Originchain-ops records the release from this artifact after publication.
+      # The workflow token is never used to create tags or GitHub releases.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: published-python-package
+          path: dist/*
+          if-no-files-found: error
