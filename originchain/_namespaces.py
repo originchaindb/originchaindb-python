@@ -24,6 +24,8 @@ import json as _json
 import warnings
 from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional, Sequence
 
+from . import _connect
+
 from .models import (
     CentroidsPreview,
     FacetBucket,
@@ -987,6 +989,9 @@ class _GraphNamespaceExtended:
 class _AdminNamespace:
     """``client.admin`` — tenant-config admin surface (0.5 addition).
 
+    Deprecated: each method warns once with a ``FutureWarning`` and the
+    namespace is removed in the next minor release.
+
     Today's only routes are the per-tenant replication-mode config
     (install + read). Both are idempotent; install replaces the prior
     config for the same tenant. A tenant whose config has never been
@@ -1009,6 +1014,7 @@ class _AdminNamespace:
         the Raft consensus path that landed in Phase D; the server
         rejects with 400 when the variant's ``is_implemented`` returns
         false (the SDK relays as :class:`OCValidationError`)."""
+        _connect.warn_admin_namespace("OriginChain", "install_tenant_config", stacklevel=2)
         body: dict[str, Any] = {"replication_mode": replication_mode}
         payload = self._p._request(
             "POST",
@@ -1023,6 +1029,7 @@ class _AdminNamespace:
         default (with ``installed=None``) when no admin has ever
         installed a config for this tenant, so callers always see a
         truthful non-404 shape."""
+        _connect.warn_admin_namespace("OriginChain", "get_tenant_config", stacklevel=2)
         payload = self._p._request(
             "GET",
             f"/v1/admin/tenants/{tenant_id}/config",

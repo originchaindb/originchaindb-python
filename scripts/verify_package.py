@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import venv
+import warnings
 
 
 def verify_installed() -> None:
@@ -106,7 +107,12 @@ def verify_installed() -> None:
             assert (await db.vector.delete_bulk("embeddings", ["one"])).deleted_count == 1
             assert (await db.fts.search("docs", "text", "example")).hits[0].doc_id == "one"
             assert await db.graph.shortest_path("nodes", "one", "two", "follows") == ["one", "two"]
-            assert (await db.admin.get_tenant_config("test")).replication_mode == "active_passive"
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                config = await db.admin.get_tenant_config("test")
+            assert config.replication_mode == "active_passive"
+            # Deprecated for one release: the installed wheel must say so.
+            assert [w.category for w in caught] == [FutureWarning], caught
         assert db._client.is_closed
 
     try:

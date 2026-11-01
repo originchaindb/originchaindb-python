@@ -16,8 +16,15 @@ Plain ``http://`` is refused except to this machine (``localhost``,
 fragment is refused too.
 
 Names read by earlier releases are still read for one release, with a one-time
-:class:`DeprecationWarning` naming the replacement. They are removed in the next
-minor release. This module is the only place they appear.
+:class:`FutureWarning` naming the replacement. They are removed in the next
+minor release. ``FutureWarning`` is shown by default wherever the call is made;
+a ``DeprecationWarning`` would be hidden unless the call came from ``__main__``,
+so an application would meet the removal without notice. This module is the
+only place the old names appear.
+
+The ``db_user=`` / ``db_key=`` pair is different: on a database where access
+tokens are not supported yet it is the only way to act as a database user, so
+it is not scheduled for removal and warns with a ``DeprecationWarning`` only.
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ from .errors import OCConfigError
 URL_ENV = "OC_URL"
 TOKEN_ENV = "OC_TOKEN"
 
-# Read for one release only, each with a one-time DeprecationWarning.
+# Read for one release only, each with a one-time FutureWarning.
 _OLD_BASE_ENV = "OC_BASE_URL"
 _OLD_TENANT_ENV = "OC_TENANT"
 _OLD_TOKEN_ENV = "OC_BEARER"
@@ -42,16 +49,25 @@ _warned: set[str] = set()
 _warned_lock = threading.Lock()
 
 
-def _warn_once(key: str, message: str, stacklevel: int) -> None:
-    """Emit ``message`` as a DeprecationWarning once per process for ``key``.
+def _warn_once(
+    key: str,
+    message: str,
+    stacklevel: int,
+    category: type[Warning] = FutureWarning,
+) -> None:
+    """Emit ``message`` once per process for ``key``.
 
     ``stacklevel`` counts from the caller of ``_warn_once``: 1 points at that
-    caller, 2 at its caller, and so on."""
+    caller, 2 at its caller, and so on. ``key`` is recorded only after
+    ``warnings.warn`` returns, so when warnings are turned into errors every
+    call raises the same error instead of the first call raising and later
+    ones passing. Two threads racing on the first call may both warn."""
     with _warned_lock:
         if key in _warned:
             return
+    warnings.warn(message, category, stacklevel=stacklevel + 1)
+    with _warned_lock:
         _warned.add(key)
-    warnings.warn(message, DeprecationWarning, stacklevel=stacklevel + 1)
 
 
 def _reset_warnings_for_tests() -> None:
@@ -248,11 +264,30 @@ def resolve_args(
 
 
 def warn_identity_arguments(owner: str, *, stacklevel: int) -> None:
-    """One-time warning for the deprecated ``db_user=`` / ``db_key=`` pair."""
+    """One-time warning for the ``db_user=`` / ``db_key=`` pair.
+
+    Not scheduled for removal: where access tokens are not supported yet, the
+    database's key with these two values is the only way to act as a database
+    user. So this is a ``DeprecationWarning``, not a ``FutureWarning``."""
     _warn_once(
         "arg:identity",
-        f"{owner}(db_user=..., db_key=...) is deprecated and will be removed in the next "
-        f"minor release: use an access token ({TOKEN_ENV}), which carries your database "
-        "identity",
+        f"{owner}(db_user=..., db_key=...) is deprecated: on a database that supports "
+        f"access tokens, use one ({TOKEN_ENV}), which carries your database identity. "
+        "These arguments keep working on databases where access tokens are not "
+        "supported yet",
+        stacklevel + 1,
+        DeprecationWarning,
+    )
+
+
+def warn_admin_namespace(owner: str, method: str, *, stacklevel: int) -> None:
+    """One-time warning for the ``admin`` namespace, removed in the next minor
+    release. Its routes sit outside the database's address and take an engine
+    tenant id, which an ``OC_URL`` + ``OC_TOKEN`` client never needs."""
+    _warn_once(
+        "admin:" + method,
+        f"{owner}.admin.{method}() is deprecated and will be removed in the next minor "
+        f"release: it calls an engine administration route outside your database's "
+        f"address ({URL_ENV}), which this client no longer covers",
         stacklevel + 1,
     )

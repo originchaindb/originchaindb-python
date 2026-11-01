@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
+import textwrap
 import warnings
+from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import httpx
@@ -255,7 +260,7 @@ def test_old_names_cannot_smuggle_plain_http(clean_env, transport):
     clean_env.setenv("OC_TENANT", "x")
     clean_env.setenv("OC_BEARER", TOKEN)
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
+        warnings.simplefilter("ignore", FutureWarning)
         with pytest.raises(OCConfigError, match="plain http://"):
             OriginChain.from_env()
     assert seen == []
@@ -269,11 +274,15 @@ def test_unusable_tokens_are_refused_without_echoing_them(token):
         assert token.strip() not in str(caught.value)
 
 
-# ── Old names: read for one release, one-time DeprecationWarning ─────────
+# ── Old names: read for one release, one-time FutureWarning ─────────────
 
 
-def _deprecations(record: list[warnings.WarningMessage]) -> list[str]:
-    return [str(w.message) for w in record if issubclass(w.category, DeprecationWarning)]
+def _deprecations(
+    record: list[warnings.WarningMessage], category: type[Warning] = FutureWarning
+) -> list[str]:
+    """Messages of exactly ``category``. FutureWarning is not a subclass of
+    DeprecationWarning or the reverse, so each test pins the category it means."""
+    return [str(w.message) for w in record if w.category is category]
 
 
 @pytest.mark.parametrize("cls", [OriginChain, AsyncOriginChain])
@@ -289,6 +298,7 @@ def test_old_env_names_still_work_and_warn_once_naming_the_replacement(cls, clea
     _close(second)
     messages = _deprecations(record)
     assert len(messages) == 2, messages
+    assert _deprecations(record, DeprecationWarning) == []
     assert any("OC_BASE_URL and OC_TENANT are deprecated" in m and "set OC_URL" in m for m in messages)
     assert any("OC_BEARER is deprecated" in m and "set OC_TOKEN" in m for m in messages)
     assert not any(TOKEN in m for m in messages)
@@ -304,6 +314,9 @@ def test_new_names_win_and_old_ones_are_reported_as_ignored(clean_env, transport
     transport()
     clean_env.setenv("OC_URL", WITHOUT_ID)
     clean_env.setenv("OC_TOKEN", TOKEN)
+    # Both old address parts are set, so they could form a whole address: the
+    # new name must still win (with only one part set they never could).
+    clean_env.setenv("OC_BASE_URL", "https://stale.example.com")
     clean_env.setenv("OC_TENANT", "stale")
     clean_env.setenv("OC_BEARER", "stale-token")
     with warnings.catch_warnings(record=True) as record:
@@ -334,14 +347,19 @@ def test_old_constructor_arguments_still_work_and_warn_once(cls, transport):
 
 
 @pytest.mark.parametrize("cls", [OriginChain, AsyncOriginChain])
-def test_identity_arguments_are_deprecated_but_still_sent_for_one_release(cls, transport):
+def test_identity_arguments_are_deprecated_but_still_sent(cls, transport):
     seen = transport()
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
         client = cls(url=WITH_ID, token=TOKEN, db_user="alice", db_key="secret-key")
         _close(cls(url=WITH_ID, token=TOKEN, db_user="alice", db_key="secret-key"))
-    messages = _deprecations(record)
+    # Not scheduled for removal (databases without access tokens need it), so
+    # a DeprecationWarning, with no removal date, never a FutureWarning.
+    assert _deprecations(record) == []
+    messages = _deprecations(record, DeprecationWarning)
     assert len(messages) == 1 and "db_user=..., db_key=...) is deprecated" in messages[0]
+    assert "keep working on databases where access tokens are not supported" in messages[0]
+    assert "next minor release" not in messages[0]
     assert "secret-key" not in messages[0]
     _sql(client)
     assert seen[0].headers["X-OC-DB-User"] == "alice"
@@ -356,3 +374,94 @@ def test_mixing_old_and_new_arguments_is_refused():
         OriginChain(token=TOKEN)
     with pytest.raises(TypeError, match="'token'"):
         OriginChain(url=WITH_ID)
+
+
+# ── The warnings reach real applications ────────────────────────────────────────────
+
+
+def _run_imported_app(tmp_path: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+    """Build clients from a module that is IMPORTED, not run as ``__main__``,
+    with Python's default warning filters: the shape of a real server app.
+    Python hides a DeprecationWarning there, so only a category shown by
+    default reaches the operator."""
+    (tmp_path / "myapp.py").write_text(textwrap.dedent("""
+        from originchain import OriginChain
+        OriginChain.from_env().close()
+        OriginChain(base_url="https://db.example.com", tenant="t1", bearer="tok").close()
+        print("built")
+    """), encoding="utf-8")
+    base = {k: v for k, v in os.environ.items()
+            if k not in NEW_ENV + OLD_ENV and not k.startswith("PYTHONWARNINGS")}
+    base["PYTHONPATH"] = os.pathsep.join(
+        [str(tmp_path), str(Path(__file__).resolve().parents[1])]
+        + ([base["PYTHONPATH"]] if base.get("PYTHONPATH") else []))
+    base.update(env)
+    return subprocess.run([sys.executable, "-c", "import myapp"], cwd=tmp_path, env=base,
+                          capture_output=True, text=True, timeout=30)
+
+
+def test_removal_warnings_are_shown_to_an_imported_application(tmp_path):
+    done = _run_imported_app(tmp_path, {
+        "OC_BASE_URL": "https://db.example.com", "OC_TENANT": "t1", "OC_BEARER": "tok"})
+    assert done.returncode == 0, done.stderr
+    assert "built" in done.stdout
+    # Positive control: all four removals (two settings, two arguments) are
+    # announced, each with its replacement.
+    assert done.stderr.count("FutureWarning") == 4, done.stderr
+    assert "set OC_URL" in done.stderr and "set OC_TOKEN" in done.stderr
+    assert "pass url=" in done.stderr
+    assert "myapp.py" in done.stderr  # pointed at the application's own line
+
+
+def test_new_names_print_no_warning_in_an_imported_application(tmp_path):
+    # Negative control for the test above: same app, same filters, new names
+    # for from_env(). Only the constructor's old arguments still warn.
+    done = _run_imported_app(tmp_path, {"OC_URL": WITH_ID, "OC_TOKEN": TOKEN})
+    assert done.returncode == 0, done.stderr
+    assert done.stderr.count("FutureWarning") == 2, done.stderr
+    assert "OC_BASE_URL" not in done.stderr and "OC_BEARER is" not in done.stderr
+
+
+def test_warnings_turned_into_errors_raise_on_every_call():
+    """Under ``-W error`` each call must raise the same error. Recording the
+    one-time key before warning made call 1 and 2 raise and call 3 pass."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for _ in range(3):
+            with pytest.raises(FutureWarning, match=r"base_url=\.\.\., tenant=\.\.\.\) is deprecated"):
+                OriginChain(base_url="https://db.example.com", tenant="t1", bearer=TOKEN)
+    # Once the filter allows it, it warns exactly once more and then stays quiet.
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        for _ in range(2):
+            OriginChain(base_url="https://db.example.com", tenant="t1", bearer=TOKEN).close()
+    assert len(_deprecations(record)) == 2
+
+
+@pytest.mark.parametrize("cls", [OriginChain, AsyncOriginChain])
+def test_admin_namespace_is_deprecated_and_warns_once_per_method(cls, transport):
+    transport(lambda request: httpx.Response(200, json={"replication_mode": "active_passive"}))
+    client = cls(url=WITH_ID, token=TOKEN)
+
+    async def calls() -> None:
+        await client.admin.get_tenant_config("t1")
+        await client.admin.get_tenant_config("t1")
+        await client.admin.install_tenant_config("t1")
+        await client.aclose()
+
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        if isinstance(client, AsyncOriginChain):
+            asyncio.run(calls())
+        else:
+            client.admin.get_tenant_config("t1")
+            client.admin.get_tenant_config("t1")
+            client.admin.install_tenant_config("t1")
+            client.close()
+    messages = _deprecations(record)
+    assert len(messages) == 2, messages
+    assert any(f"{cls.__name__}.admin.get_tenant_config() is deprecated" in m for m in messages)
+    assert any(f"{cls.__name__}.admin.install_tenant_config() is deprecated" in m
+               for m in messages)
+    assert all("next minor release" in m for m in messages)
+    assert all(w.filename == __file__ for w in record)

@@ -2,8 +2,8 @@ import httpx
 import pytest
 from originchain import OriginChain, AsyncOriginChain
 
-# db_user= / db_key= are deprecated but still sent for one release; their
-# one-time warning is asserted in tests/test_connect.py.
+# db_user= / db_key= are deprecated but still sent: databases without access
+# tokens need them. Their one-time warning is asserted in tests/test_connect.py.
 pytestmark = pytest.mark.filterwarnings(r"ignore:.*OriginChain\(db_user=:DeprecationWarning")
 
 

@@ -4,13 +4,14 @@ Unlike ``test_e2e_live.py`` (which assumes pre-existing schemas and skips
 liberally), this script registers its own namespace, seeds data, and asserts
 every feature — a real CI gate. Run it directly, not via pytest:
 
-    OC_BASE=https://<tenant>.<region>.db.originchain.ai \\
-    OC_BEARER=<bearer> OC_TENANT=<tenant-ulid> [OC_NS=shopdemo] \\
+    OC_URL=<your database's address, from Connect> \\
+    OC_TOKEN=<an access token> [OC_NS=shopdemo] \\
     python tests/e2e_smoke.py
 
-Guarded: exits 0 without running when OC_BASE is unset (e.g. a fork PR without
-secrets). Graph uses a self-relation FK (the real engine model): the edge runs
-from a row's PK to the value in from_col.
+Guarded: exits 0 without running when OC_URL is unset (e.g. a fork PR without
+secrets), unless OC_REQUIRE_LIVE=1, which makes a missing setting fail.
+Graph uses a self-relation FK (the real engine model): the edge runs from a
+row's PK to the value in from_col.
 """
 import asyncio
 import os
@@ -20,19 +21,17 @@ from originchain import AsyncOriginChain, OriginChain
 
 
 if os.environ.get("OC_REQUIRE_LIVE") == "1":
-    for name in ("OC_BASE", "OC_BEARER", "OC_TENANT"):
+    for name in ("OC_URL", "OC_TOKEN"):
         if not os.environ.get(name):
             sys.exit("Required live-test setting missing: " + name)
 
-if not os.environ.get("OC_BASE"):
-    print("OC_BASE unset — skipping live E2E (set OC_BASE/OC_BEARER/OC_TENANT to run).")
+if not os.environ.get("OC_URL"):
+    print("OC_URL unset — skipping live E2E (set OC_URL and OC_TOKEN to run).")
     sys.exit(0)
 
-BASE = os.environ["OC_BASE"]
-TOK = os.environ["OC_BEARER"]
-T = os.environ["OC_TENANT"]
 NS = os.environ.get("OC_NS", "shopdemo")
-db = OriginChain(base_url=BASE, bearer=TOK, tenant=T, db_user=os.environ.get("OC_DB_USER") or None, db_key=os.environ.get("OC_DB_KEY") or None)
+# The same two values an application uses: this is the live check of from_env().
+db = OriginChain.from_env()
 
 results = []
 
@@ -125,11 +124,7 @@ step("invalid SQL (want-fail)", lambda: db.sql("SELECT FROM WHERE"), expect_fail
 
 
 async def check_async_surface():
-    async with AsyncOriginChain(
-        base_url=BASE, bearer=TOK, tenant=T,
-        db_user=os.environ.get("OC_DB_USER") or None,
-        db_key=os.environ.get("OC_DB_KEY") or None,
-    ) as client:
+    async with AsyncOriginChain.from_env() as client:
         async def rows():
             for row_id in ("async-one", "async-two"):
                 yield {"id": row_id, "name": "Async", "price": 1.0}

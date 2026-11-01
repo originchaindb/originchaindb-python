@@ -103,6 +103,7 @@ def test_read_examples_use_sdk_requests_and_return_server_values():
         tenantless = run("sql", OC_URL=f"{origin}/v1")
         assert tenantless.returncode == 0, tenantless.stderr
         assert requests[-1][1].path == "/v1/sql"
+        assert "FutureWarning" not in tenantless.stderr
         assert "DeprecationWarning" not in tenantless.stderr
 
         # The names earlier releases read still work for one release, with a
@@ -113,7 +114,7 @@ def test_read_examples_use_sdk_requests_and_return_server_values():
                                 capture_output=True, text=True, timeout=15)
         assert legacy.returncode == 0, legacy.stderr
         assert requests[-1][1].path == "/v1/tenants/fixture/sql"
-        assert legacy.stderr.count("DeprecationWarning") == 2, legacy.stderr
+        assert legacy.stderr.count("FutureWarning") == 2, legacy.stderr
         assert "set OC_URL" in legacy.stderr and "set OC_TOKEN" in legacy.stderr
         assert "fixture-token" not in legacy.stderr
         assert len(requests) == 7

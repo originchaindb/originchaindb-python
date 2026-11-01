@@ -34,7 +34,7 @@ The Python import and distribution name remain `originchain`. Async support and 
 ## Connect
 
 <!-- connect:begin -->
-<!-- TODO(connect contract): replace this block with the text rendered from the connect contract (operation-backend `src/connect/contract.v1.json`, branch `feat/one-access-contract`) once it lands. Until then it follows the one-access-path plan, section 2.1. -->
+<!-- TODO(connect contract): replace this block with the text rendered from the published connect contract (connect.v1.json) once it is available. -->
 
 Connect over HTTPS with two values: OC_URL (your database's address, from Connect) and OC_TOKEN (an access token from Access tokens). Send Authorization: Bearer $OC_TOKEN to $OC_URL/sql.
 
@@ -186,7 +186,6 @@ for hit in result.hits:
 | `db.fts` | Indexing, search and text-analysis controls | [Full-text search](https://originchaindb.com/docs/fts) |
 | `db.graph` | Traversals, shortest-path costs and graph algorithms | [Graphs](https://originchaindb.com/docs/graph) |
 | `db.cypher(...)` | Cypher queries with named parameters | [Graphs](https://originchaindb.com/docs/graph) |
-| `db.admin` | Privileged engine configuration | [HTTP API](https://originchaindb.com/docs/api) |
 
 These namespaces exist on both clients. Operations require the corresponding engine feature and permissions. The [client source](originchain/client.py) and [typed namespaces](originchain/_namespaces.py) define the Python signatures. Graph relations must be registered before traversal; Dijkstra uses directed node-pair weights and returns a nullable cost rather than a path.
 

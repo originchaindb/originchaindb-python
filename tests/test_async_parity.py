@@ -17,9 +17,12 @@ import pytest
 
 from originchain import AsyncOriginChain, OriginChain, OCServerError
 
-# The factory below still exercises the deprecated identity arguments, which
-# work for one release; tests/test_connect.py asserts their warning.
-pytestmark = pytest.mark.filterwarnings(r"ignore:AsyncOriginChain\(db_user=:DeprecationWarning")
+# The factory below still exercises the deprecated identity arguments and the
+# deprecated admin namespace; tests/test_connect.py asserts both warnings.
+pytestmark = [
+    pytest.mark.filterwarnings(r"ignore:AsyncOriginChain\(db_user=:DeprecationWarning"),
+    pytest.mark.filterwarnings(r"ignore:AsyncOriginChain\.admin\..*is deprecated:FutureWarning"),
+]
 
 
 @pytest.fixture
