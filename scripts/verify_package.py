@@ -71,7 +71,7 @@ def verify_installed() -> None:
     real_sync = httpx.Client
     httpx.Client = lambda **kwargs: real_sync(**kwargs, transport=httpx.MockTransport(handler))
     try:
-        with OriginChain(base_url="https://engine.invalid", bearer="test", tenant="test", verify=False) as client:
+        with OriginChain(url="https://engine.invalid/v1/tenants/test", token="test", verify=False) as client:
             assert client.query_metrics() == metrics
             deleted = client.sql("DELETE FROM demo.rows")
             assert deleted.pk is None and deleted.rows_affected == 2
@@ -88,7 +88,7 @@ def verify_installed() -> None:
 
     async def smoke():
         async with AsyncOriginChain(
-            base_url="https://engine.invalid", bearer="test", tenant="test", verify=False,
+            url="https://engine.invalid/v1/tenants/test", token="test", verify=False,
         ) as db:
             assert await db.query_metrics() == metrics
             deleted = await db.sql("DELETE FROM demo.rows")

@@ -5,7 +5,7 @@ from originchain import AsyncOriginChain, OriginChain
 
 
 def test_sync_supported_query_surface():
-    with OriginChain(base_url="https://example.com", bearer="fixture", tenant="fixture") as client:
+    with OriginChain(url="https://example.com/v1/tenants/fixture", token="fixture") as client:
         assert not hasattr(client, "ask")
         assert callable(client.sql.query)
         assert callable(client.fts.search)
@@ -15,7 +15,7 @@ def test_sync_supported_query_surface():
 
 @pytest.mark.asyncio
 async def test_async_supported_query_surface():
-    async with AsyncOriginChain(base_url="https://example.com", bearer="fixture", tenant="fixture") as client:
+    async with AsyncOriginChain(url="https://example.com/v1/tenants/fixture", token="fixture") as client:
         assert not hasattr(client, "ask")
         assert callable(client.sql.query)
         assert callable(client.fts.search)

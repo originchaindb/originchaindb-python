@@ -9,6 +9,10 @@ Changes to the OriginChainDB Python SDK. Earlier entries describe package versio
 - Remove the synchronous and asynchronous `ask()` helpers. Use SQL, full-text search, vector search, or graph operations directly.
 - Remove the natural-language availability prerequisite from live and release verification. The four supported query families retain their live acceptance checks.
 - Mark development builds as `0.11.0.dev0`; previously published packages are unchanged.
+- Connect with two values. `from_env()` needs only `OC_URL` (your database's address, from Connect) and `OC_TOKEN` (an access token); the constructors take `url=` and `token=`. Every call appends its path (`/sql`, `/cypher`, ...) to `OC_URL` exactly as given, so addresses with or without a database id in the path work the same way. Routes outside the database, such as `/health`, use the address's origin.
+- Refuse a plain `http://` address except to `localhost`, `127.0.0.1` or `::1`, and refuse an address with a user name, password, query or fragment. These raise the new `OCConfigError` (an `OCError` and a `ValueError`) before any request is sent.
+- The connection settings and constructor arguments earlier releases used, and the `db_user=` / `db_key=` pair, still work for this release. Each emits a one-time `DeprecationWarning` naming its replacement; they will be removed in the next minor release.
+- Add `cypher(query, params, default_schema=...)` to both clients for `POST $OC_URL/cypher`, with named parameters.
 
 ## [0.10.0rc5] - 2026-10-25
 

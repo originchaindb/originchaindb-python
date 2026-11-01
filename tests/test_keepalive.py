@@ -26,7 +26,7 @@ def test_keepalive_is_clamped_below_the_network_idle_timeout() -> None:
 
 
 def test_clients_accept_the_parameter() -> None:
-    sync = OriginChain(base_url="https://example.invalid", bearer="x", tenant="t", keepalive_expiry=120)
+    sync = OriginChain(url="https://example.invalid/v1/tenants/t", token="x", keepalive_expiry=120)
     sync.close()
-    OriginChain(base_url="https://example.invalid", bearer="x", tenant="t").close()
-    AsyncOriginChain(base_url="https://example.invalid", bearer="x", tenant="t", keepalive_expiry=120)
+    OriginChain(url="https://example.invalid/v1/tenants/t", token="x").close()
+    AsyncOriginChain(url="https://example.invalid/v1/tenants/t", token="x", keepalive_expiry=120)

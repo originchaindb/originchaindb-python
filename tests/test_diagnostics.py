@@ -58,7 +58,7 @@ class Engine:
 
 def client(engine: Handler, *, diagnostics: bool = False, retries: int = 0) -> OriginChain:
     db = OriginChain(
-        base_url="http://test.invalid", bearer="b", tenant=TENANT,
+        url=f"https://test.invalid/v1/tenants/{TENANT}", token="b",
         max_retries=retries, diagnostics=diagnostics,
     )
     db._client = httpx.Client(base_url="http://test.invalid", transport=httpx.MockTransport(engine))
@@ -107,7 +107,7 @@ def test_reports_carry_only_contract_fields_and_no_query_text() -> None:
     engine = Engine((503, {"error": "engine is busy"}), (200, {"kind": "select", "rows": []}))
     db = client(engine, diagnostics=True, retries=1)
     db.sql("SELECT secret FROM private_table", retry_safe=True)
-    db._request("GET", f"/v1/tenants/{TENANT}/fts/articles/body?q=confidential+search")
+    db._request("GET", "fts/articles/body?q=confidential+search")
     db.flush_diagnostics()
     events = engine.events
     assert len(events) == 3, "one per attempt, the retried 503 included"
@@ -159,8 +159,8 @@ def test_a_callers_uuid_is_kept_and_a_non_uuid_never_reported() -> None:
     engine = Engine()
     db = client(engine, diagnostics=True)
     mine = "0B9A6C1E-2F4D-4C8B-9E7A-1D2C3B4A5F60"
-    db._request("POST", f"/v1/tenants/{TENANT}/sql", json={}, headers={"x-oc-logical-request-id": mine})
-    db._request("POST", f"/v1/tenants/{TENANT}/sql", json={}, headers={"X-OC-Logical-Request-Id": "order-42"})
+    db._request("POST", "sql", json={}, headers={"x-oc-logical-request-id": mine})
+    db._request("POST", "sql", json={}, headers={"X-OC-Logical-Request-Id": "order-42"})
     db.flush_diagnostics()
     assert engine.calls[0].headers["X-OC-Logical-Request-Id"] == mine
     assert engine.calls[1].headers["X-OC-Logical-Request-Id"] == "order-42"
@@ -230,14 +230,14 @@ def test_async_client_correlates_and_reports() -> None:
 
     async def run() -> OCError | None:
         db = AsyncOriginChain(
-            base_url="http://test.invalid", bearer="b", tenant=TENANT,
+            url=f"https://test.invalid/v1/tenants/{TENANT}", token="b",
             max_retries=1, diagnostics=True,
         )
         db._client = httpx.AsyncClient(
             base_url="http://test.invalid", transport=httpx.MockTransport(engine)
         )
         db._backoff = lambda attempt: 0.0  # type: ignore[method-assign]
-        await db._request("POST", f"/v1/tenants/{TENANT}/sql", json={"sql": "SELECT 1"}, retry_safe=True)
+        await db._request("POST", "sql", json={"sql": "SELECT 1"}, retry_safe=True)
         await db.flush_diagnostics()
         await db.aclose()
         return None

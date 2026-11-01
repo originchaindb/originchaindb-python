@@ -17,6 +17,10 @@ import pytest
 
 from originchain import AsyncOriginChain, OriginChain, OCServerError
 
+# The factory below still exercises the deprecated identity arguments, which
+# work for one release; tests/test_connect.py asserts their warning.
+pytestmark = pytest.mark.filterwarnings(r"ignore:AsyncOriginChain\(db_user=:DeprecationWarning")
+
 
 @pytest.fixture
 def async_client_factory(monkeypatch):
@@ -31,7 +35,7 @@ def async_client_factory(monkeypatch):
 
         monkeypatch.setattr(httpx, "AsyncClient", factory)
         return AsyncOriginChain(
-            base_url="https://engine.invalid", bearer="test-bearer", tenant="test",
+            url="https://engine.invalid/v1/tenants/test", token="test-bearer",
             verify=False, db_user="test-user", db_key="test-db-key", **options,
         )
 
@@ -41,9 +45,9 @@ def async_client_factory(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_public_namespace_methods_and_arguments_match():
-    with OriginChain(base_url="http://test.invalid", bearer="x", tenant="t", verify=False) as sync:
+    with OriginChain(url="https://test.invalid/v1/tenants/t", token="x", verify=False) as sync:
         async with AsyncOriginChain(
-            base_url="http://test.invalid", bearer="x", tenant="t", verify=False,
+            url="https://test.invalid/v1/tenants/t", token="x", verify=False,
         ) as asynchronous:
             for name in ("schemas", "rows", "sql", "vector", "fts", "graph", "admin"):
                 lhs, rhs = getattr(sync, name), getattr(asynchronous, name)

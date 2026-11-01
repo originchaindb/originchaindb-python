@@ -1,4 +1,7 @@
-"""Database identity headers. These supplement the instance bearer token."""
+"""Deprecated database identity headers (``db_user=`` / ``db_key=``).
+
+Kept for one release. An access token (``OC_TOKEN``) carries the database
+identity itself."""
 from typing import Optional
 
 

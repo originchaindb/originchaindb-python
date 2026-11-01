@@ -142,6 +142,30 @@ def _positional_params(params: Sequence[Any]) -> list[Any]:
     return list(params)
 
 
+def _cypher_body(
+    query: str, params: Optional[Mapping[str, Any]], default_schema: Optional[str],
+) -> dict[str, Any]:
+    """The ``POST $OC_URL/cypher`` request body.
+
+    Cypher binds by NAME, unlike ``/sql``: ``$name`` in the query takes
+    ``params["name"]``. A list is rejected rather than guessed into names."""
+    from .errors import OCValidationError
+
+    if not isinstance(query, str) or not query.strip():
+        raise OCValidationError("cypher query must be a non-empty string")
+    body: dict[str, Any] = {"cypher": query}
+    if params is not None:
+        if not isinstance(params, Mapping) or not all(isinstance(k, str) for k in params):
+            raise OCValidationError(
+                "cypher params must be a mapping of names to values: $name in the "
+                'query binds params["name"]'
+            )
+        body["params"] = dict(params)
+    if default_schema is not None:
+        body["default_schema"] = default_schema
+    return body
+
+
 # ─────────────────────────── SQL namespace ───────────────────────────
 
 
@@ -200,7 +224,7 @@ class _SqlNamespace:
             body["params"] = _positional_params(params)
         payload = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/sql",
+            "sql",
             json=body,
             retry_safe=retry_safe,
             headers={"Idempotency-Key": idempotency_key} if idempotency_key is not None else None,
@@ -251,7 +275,7 @@ class _SqlNamespace:
             body["source_schema"] = source_schema
         payload = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/sql/materialized-views",
+            "sql/materialized-views",
             json=body,
         ).json()
         return MaterializedViewInstallResult._from_payload(payload)
@@ -265,7 +289,7 @@ class _SqlNamespace:
         isn't installed."""
         payload = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/sql/materialized-views/{name}/refresh",
+            f"sql/materialized-views/{name}/refresh",
         ).json()
         return MaterializedViewRefreshResult._from_payload(payload)
 
@@ -276,7 +300,7 @@ class _SqlNamespace:
         404 when ``name`` isn't installed."""
         payload = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/sql/materialized-views/{name}",
+            f"sql/materialized-views/{name}",
         ).json()
         return MaterializedViewRows._from_payload(payload)
 
@@ -289,7 +313,7 @@ class _SqlNamespace:
         """
         payload = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/sql",
+            "sql",
             json={"sql": stmt},
         ).json()
         return _decode_sql_exec_response(payload)
@@ -325,7 +349,7 @@ class _VectorNamespace:
             body["metadata"] = dict(metadata)
         self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/vector/{table}/put",
+            f"vector/{table}/put",
             json=body,
         )
 
@@ -353,7 +377,7 @@ class _VectorNamespace:
             body["ivf_nprobe"] = nprobe
         hits = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/vector/{table}/topk",
+            f"vector/{table}/topk",
             json=body,
         ).json()
         return [VectorHitV2._from_payload(h) for h in hits]
@@ -383,7 +407,7 @@ class _VectorNamespace:
             params["repair"] = "true"
         payload = self._p._request(
             "DELETE",
-            f"/v1/tenants/{self._p.tenant}/vector/{table}/{vec_id}",
+            f"vector/{table}/{vec_id}",
             params=params or None,
         ).json()
         return VectorDeleteResult._from_payload(payload)
@@ -408,7 +432,7 @@ class _VectorNamespace:
             body["repair"] = True
         payload = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/vector/{table}/delete-bulk",
+            f"vector/{table}/delete-bulk",
             json=body,
         ).json()
         return VectorDeleteBulkResult._from_payload(payload)
@@ -431,7 +455,7 @@ class _VectorNamespace:
         }
         payload = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/vector/{table}/install-centroids",
+            f"vector/{table}/install-centroids",
             json=body,
         ).json()
         return InstallCentroidsResult._from_payload(payload)
@@ -468,8 +492,8 @@ class _VectorNamespace:
             body["seed"] = int(seed)
         payload = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/vector/{table}"
-            f"/train-and-install-centroids",
+            f"vector/{table}"
+            "/train-and-install-centroids",
             json=body,
         ).json()
         return TrainAndInstallCentroidsResult._from_payload(payload)
@@ -483,7 +507,7 @@ class _VectorNamespace:
         ``partitions × dim``."""
         payload = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/vector/{table}/centroids",
+            f"vector/{table}/centroids",
         ).json()
         return CentroidsPreview._from_payload(payload)
 
@@ -496,7 +520,7 @@ class _VectorNamespace:
         IVF table or hasn't been bootstrapped yet)."""
         payload = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/vector/{table}/ivf-rebalance-status",
+            f"vector/{table}/ivf-rebalance-status",
         ).json()
         return IvfRebalanceStatus._from_payload(payload)
 
@@ -522,7 +546,7 @@ class _FtsNamespace:
     ) -> None:
         self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/fts/{table}/{field}",
+            f"fts/{table}/{field}",
             json={"doc_id": doc_id, "text": text},
         )
 
@@ -557,7 +581,7 @@ class _FtsNamespace:
             params["facets"] = ",".join(facets)
         payload = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/fts/{table}/{field}",
+            f"fts/{table}/{field}",
             params=params,
         ).json()
         # Three wire shapes:
@@ -594,7 +618,7 @@ class _FtsNamespace:
     ) -> None:
         self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/fts/{table}/{field}/synonyms",
+            f"fts/{table}/{field}/synonyms",
             json={"synonyms": {k: list(v) for k, v in synonyms.items()}},
         )
 
@@ -606,7 +630,7 @@ class _FtsNamespace:
     ) -> None:
         self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/fts/{table}/{field}/stopwords",
+            f"fts/{table}/{field}/stopwords",
             json={"stopwords": list(stopwords)},
         )
 
@@ -642,7 +666,7 @@ class _GraphNamespaceExtended:
         params = {"rel": rel, "pk": src_pk}
         pks = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/neighbors",
+            f"graph/{schema}/neighbors",
             params=params,
         ).json()
         return [str(p) for p in pks]
@@ -659,7 +683,7 @@ class _GraphNamespaceExtended:
         params = {"rel": rel, "pk": src_pk, "max_depth": str(max_depth)}
         hits = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/bfs",
+            f"graph/{schema}/bfs",
             params=params,
         ).json()
         return [str(h.get("pk", "")) for h in hits]
@@ -704,7 +728,7 @@ class _GraphNamespaceExtended:
             params["weight_col"] = weight_col
         body = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/k-shortest",
+            f"graph/{schema}/k-shortest",
             params=params,
         ).json()
         paths_raw = body.get("paths", [])
@@ -737,7 +761,7 @@ class _GraphNamespaceExtended:
             params["q"] = str(q)
         body = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/random-walk",
+            f"graph/{schema}/random-walk",
             params=params,
         ).json()
         walk = body.get("walk", [])
@@ -760,7 +784,7 @@ class _GraphNamespaceExtended:
         }
         body = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/louvain",
+            f"graph/{schema}/louvain",
             params=params,
         ).json()
         communities = body.get("communities", [])
@@ -792,7 +816,7 @@ class _GraphNamespaceExtended:
             params["nodes"] = ",".join(nodes)
         hits = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/pagerank",
+            f"graph/{schema}/pagerank",
             params=params,
         ).json()
         return {str(h["pk"]): float(h["score"]) for h in hits}
@@ -816,7 +840,7 @@ class _GraphNamespaceExtended:
         }
         rows = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/label_propagation",
+            f"graph/{schema}/label_propagation",
             params=params,
         ).json()
         # Wire shape: List[{pk: [...], label: u64}]. The "pk" cell is
@@ -852,7 +876,7 @@ class _GraphNamespaceExtended:
         }
         hits = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/node2vec/{rel}/topk",
+            f"graph/{schema}/node2vec/{rel}/topk",
             params=params,
         ).json()
         return [GraphEmbeddingHit._from_payload(h) for h in hits]
@@ -890,7 +914,7 @@ class _GraphNamespaceExtended:
                 body[key] = value
         payload = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/graphsage",
+            f"graph/{schema}/graphsage",
             json=body,
         ).json()
         return GraphSageResult._from_payload(payload)
@@ -917,7 +941,7 @@ class _GraphNamespaceExtended:
         }
         hits = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/graphsage/{rel}/topk",
+            f"graph/{schema}/graphsage/{rel}/topk",
             params=params,
         ).json()
         return [GraphEmbeddingHit._from_payload(h) for h in hits]
@@ -938,7 +962,7 @@ class _GraphNamespaceExtended:
             params["max_nodes"] = str(max_nodes)
         rows = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/betweenness",
+            f"graph/{schema}/betweenness",
             params=params,
         ).json()
         out: dict[str, float] = {}

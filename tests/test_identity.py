@@ -2,13 +2,17 @@ import httpx
 import pytest
 from originchain import OriginChain, AsyncOriginChain
 
+# db_user= / db_key= are deprecated but still sent for one release; their
+# one-time warning is asserted in tests/test_connect.py.
+pytestmark = pytest.mark.filterwarnings(r"ignore:.*OriginChain\(db_user=:DeprecationWarning")
+
 
 @pytest.mark.parametrize("client_type", [OriginChain, AsyncOriginChain])
 @pytest.mark.parametrize("kwargs", [dict(db_user="alice"), dict(db_key="secret"),
     dict(db_user="", db_key="secret"), dict(db_user="alice", db_key="bad\r\nkey")])
 def test_incomplete_or_invalid_identity_rejected(client_type, kwargs):
     with pytest.raises(ValueError, match="db_user and db_key"):
-        client_type(base_url="https://engine.invalid", bearer="bearer", tenant="tenant", **kwargs)
+        client_type(url="https://engine.invalid/v1/tenants/tenant", token="bearer", **kwargs)
 
 
 def test_sync_identity_is_sent_with_bearer_on_reads_and_writes(monkeypatch):
@@ -20,7 +24,7 @@ def test_sync_identity_is_sent_with_bearer_on_reads_and_writes(monkeypatch):
             return httpx.Response(200, json={"ok": True})
         return real(**kwargs, transport=httpx.MockTransport(reply))
     monkeypatch.setattr(httpx, "Client", factory)
-    with OriginChain(base_url="https://engine.invalid", bearer="bearer", tenant="tenant",
+    with OriginChain(url="https://engine.invalid/v1/tenants/tenant", token="bearer",
                      db_user="alice", db_key="secret") as client:
         client.health()
         client.rows.put("demo", {"id": "1"})
@@ -43,8 +47,7 @@ async def test_async_identity_and_bearer_only_remain_separate(monkeypatch):
         return real(**kwargs, transport=httpx.MockTransport(reply))
     monkeypatch.setattr(httpx, "AsyncClient", factory)
     for kwargs in [dict(db_user="alice", db_key="secret"), {}]:
-        async with AsyncOriginChain(base_url="https://engine.invalid", bearer="bearer",
-                                    tenant="tenant", **kwargs) as client:
+        async with AsyncOriginChain(url="https://engine.invalid/v1/tenants/tenant", token="bearer", **kwargs) as client:
             await client.health()
     assert requests[0].headers["X-OC-DB-Key"] == "secret"
     assert "X-OC-DB-User" not in requests[1].headers

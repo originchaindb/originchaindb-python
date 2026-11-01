@@ -48,8 +48,8 @@ def test_read_examples_use_sdk_requests_and_return_server_values():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     env = {key: value for key, value in os.environ.items() if not key.startswith("OC_")}
-    env.update(OC_BASE_URL=f"http://127.0.0.1:{server.server_port}", OC_TENANT="fixture",
-               OC_BEARER="fixture-token", OC_DB_USER="fixture-user", OC_DB_KEY="fixture-key",
+    origin = f"http://127.0.0.1:{server.server_port}"
+    env.update(OC_URL=f"{origin}/v1/tenants/fixture", OC_TOKEN="fixture-token",
                OC_TABLE="sample.items", OC_FTS_FIELD="body", OC_QUERY="tea & mug",
                OC_QUERY_VECTOR="[1,0]", OC_RELATION="related", OC_NODE_ID="item/1")
     script = Path(__file__).resolve().parents[1] / "examples/query.py"
@@ -84,18 +84,39 @@ def test_read_examples_use_sdk_requests_and_return_server_values():
         for _, _, headers, _ in requests:
             normalized = {key.lower(): value for key, value in headers.items()}
             assert normalized["authorization"] == "Bearer fixture-token"
-            assert normalized["x-oc-db-user"] == "fixture-user"
-            assert normalized["x-oc-db-key"] == "fixture-key"
+            # The address and the token are the whole connection: no other header.
+            assert not any(key.startswith("x-oc-db-") for key in normalized)
         assert run("--help").returncode == 0
         assert run("vector", OC_QUERY_VECTOR='["bad"]').returncode != 0
-        assert run("sql", OC_BEARER="").returncode != 0
+        assert run("sql", OC_TOKEN="").returncode != 0
+        assert run("sql", OC_URL="").returncode != 0
         assert len(requests) == 4
-        denied = run("sql", OC_BEARER="rejected-fixture-token")
+        denied = run("sql", OC_TOKEN="rejected-fixture-token")
         assert denied.returncode != 0
         assert "Query failed" in denied.stderr
         assert "fixture-private-row-marker" not in denied.stdout + denied.stderr
         assert "rejected-fixture-token" not in denied.stdout + denied.stderr
         assert len(requests) == 5
+
+        # OC_URL is opaque: an address without a database id in its path is
+        # used the same way, with the door path appended.
+        tenantless = run("sql", OC_URL=f"{origin}/v1")
+        assert tenantless.returncode == 0, tenantless.stderr
+        assert requests[-1][1].path == "/v1/sql"
+        assert "DeprecationWarning" not in tenantless.stderr
+
+        # The names earlier releases read still work for one release, with a
+        # warning on stderr naming each replacement.
+        old = {key: value for key, value in env.items() if key not in ("OC_URL", "OC_TOKEN")}
+        old.update({"OC_BASE_URL": origin, "OC_TENANT": "fixture", "OC_BEARER": "fixture-token"})
+        legacy = subprocess.run([sys.executable, str(script), "sql"], env=old,
+                                capture_output=True, text=True, timeout=15)
+        assert legacy.returncode == 0, legacy.stderr
+        assert requests[-1][1].path == "/v1/tenants/fixture/sql"
+        assert legacy.stderr.count("DeprecationWarning") == 2, legacy.stderr
+        assert "set OC_URL" in legacy.stderr and "set OC_TOKEN" in legacy.stderr
+        assert "fixture-token" not in legacy.stderr
+        assert len(requests) == 7
     finally:
         server.shutdown()
         server.server_close()
