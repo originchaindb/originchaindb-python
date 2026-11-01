@@ -31,15 +31,17 @@ python -m pip install .
 
 The Python import and distribution name remain `originchain`. Async support and HTTP/2 dependencies are included. Pin a reviewed Git commit when using development builds. Existing PyPI versions predate this repository; no new package release has been published from it.
 
-## Your first query
+## Connect
 
-Set the connection details for one database in your environment:
+<!-- connect:begin -->
+<!-- TODO(connect contract): replace this block with the text rendered from the published connect contract (connect.v1.json) once it is available. -->
+
+Connect over HTTPS with two values: OC_URL (your database's address, from Connect) and OC_TOKEN (an access token from Access tokens). Send Authorization: Bearer $OC_TOKEN to $OC_URL/sql.
 
 | Variable | Value |
 | --- | --- |
-| `OC_BASE_URL` | Full database HTTPS endpoint |
-| `OC_TENANT` | Tenant ID from the same connection details |
-| `OC_BEARER` | Instance bearer token |
+| `OC_URL` | Your database's address, from Connect. Use it exactly as shown. |
+| `OC_TOKEN` | An access token, from Access tokens. On a database where access tokens are not supported yet, use that database's key. |
 
 Save this as `query.py` and run `python query.py`. It needs no tables or sample data.
 
@@ -55,22 +57,12 @@ with OriginChain.from_env() as db:
         print(row["message"])
 ```
 
-Reuse a client across requests to reuse its HTTP connections. The context manager closes it; otherwise call `close()` when finished.
+`from_env()` needs `OC_URL` and `OC_TOKEN`, and nothing else. Each call appends its path (`/sql`, `/cypher` and so on) to `OC_URL`; the client never builds, edits or parses the address. Plain `http://` is refused, except to `localhost`, `127.0.0.1` or `::1`.
 
-If your database requires user identity, provide both values alongside the instance bearer:
+A token reaches your data once you have a database identity on that database. Until then the database answers 401: set up your identity from the token's details, or ask an admin.
+<!-- connect:end -->
 
-```python
-import os
-from originchain import OriginChain
-
-with OriginChain.from_env(
-    db_user=os.environ["OC_DB_USER"],
-    db_key=os.environ["OC_DB_KEY"],
-) as db:
-    print(db.sql_one("SELECT $1 AS value", [7]))
-```
-
-The two credentials add database-user headers; they do not replace the bearer token. Omit both for a bearer-only connection. `from_env()` reads the three connection variables above; pass optional settings as keyword arguments.
+To pass the values yourself, use `OriginChain(url=..., token=...)`. Reuse a client across requests to reuse its HTTP connections. The context manager closes it; otherwise call `close()` when finished. Connection settings from earlier releases still work for one release and warn once, naming the replacement.
 
 ## Async applications
 
@@ -150,6 +142,19 @@ print(accepted)
 
 Batches are sent sequentially. Async batches also accept async iterables. Each chunk receives a distinct key derived from the base key. Failure or cancellation stops later chunks; earlier chunks may already be durable. Before replaying a batch, check the server outcome and keep the same base key, ordering and chunk size. Deduplication depends on the endpoint and its retention window.
 
+## Cypher
+
+```python
+result = db.cypher(
+    "MATCH (p) WHERE p.price_cents < $max RETURN p.name",
+    {"max": 2000},
+    default_schema="quickstart.products",
+)
+print(result)
+```
+
+Cypher parameters are named: `$max` binds `params["max"]`. `default_schema` is the table a node pattern without a label reads. The response is returned unchanged; a read is `{"kind": "select", "rows": [...]}`.
+
 ## Vector and full-text search
 
 The SDK accepts embeddings supplied by your application. Use a table configured for the chosen vector dimensions and metric:
@@ -180,7 +185,7 @@ for hit in result.hits:
 | `db.vector` | Vector storage, search, deletion and index controls | [Vector search](https://originchaindb.com/docs/vector) |
 | `db.fts` | Indexing, search and text-analysis controls | [Full-text search](https://originchaindb.com/docs/fts) |
 | `db.graph` | Traversals, shortest-path costs and graph algorithms | [Graphs](https://originchaindb.com/docs/graph) |
-| `db.admin` | Privileged engine configuration | [HTTP API](https://originchaindb.com/docs/api) |
+| `db.cypher(...)` | Cypher queries with named parameters | [Graphs](https://originchaindb.com/docs/graph) |
 
 These namespaces exist on both clients. Operations require the corresponding engine feature and permissions. The [client source](originchain/client.py) and [typed namespaces](originchain/_namespaces.py) define the Python signatures. Graph relations must be registered before traversal; Dijkstra uses directed node-pair weights and returns a nullable cost rather than a path.
 
@@ -219,7 +224,7 @@ except OCError as error:
     raise
 ```
 
-HTTP failures use `OCError` subclasses. Transport failures are wrapped in `OCError`, with the underlying HTTPX exception available as `error.__cause__`. `OCReplicationDegraded` is a warning about replication acknowledgement, not an `OCError`. Include the request ID in support reports and keep credentials and query data out of logs.
+HTTP failures use `OCError` subclasses. A connection setting refused before any request is sent, such as a plain `http://` address, raises `OCConfigError`. Transport failures are wrapped in `OCError`, with the underlying HTTPX exception available as `error.__cause__`. `OCReplicationDegraded` is a warning about replication acknowledgement, not an `OCError`. Include the request ID in support reports and keep credentials and query data out of logs.
 
 Diagnostics are opt-in and report request metadata to your own engine, excluding SQL text, parameters and row contents. Closing the client flushes pending reports.
 
@@ -234,7 +239,7 @@ with OriginChain.from_env() as db:
         print(bucket["at"], rate, bucket["mean_latency_ms"])
 ```
 
-Use service or query-administrator credentials without database-user impersonation headers. Supported `(minutes, bucket_seconds)` pairs are `(60, 60)`, `(1440, 600)` and `(10080, 3600)`. Metrics are process-local and reset on restart. Idle latency is `None`; timestamps are Unix milliseconds. The response uses typed dictionaries and preserves integer counts.
+Use a credential with query-administrator access. Supported `(minutes, bucket_seconds)` pairs are `(60, 60)`, `(1440, 600)` and `(10080, 3600)`. Metrics are process-local and reset on restart. Idle latency is `None`; timestamps are Unix milliseconds. The response uses typed dictionaries and preserves integer counts.
 
 ## Compatibility and development
 

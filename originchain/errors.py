@@ -10,6 +10,8 @@ class. Specific subclasses let callers branch on retryability:
 - :class:`OCValidationError` (400) - DON'T retry, the request is malformed.
 - :class:`OCRateLimitedError` (429) - DO retry after ``Retry-After``.
 - :class:`OCServerError` (5xx) - MAY retry with backoff if idempotent.
+- :class:`OCConfigError` - a connection setting was refused before any
+  request was sent (for example a plain ``http://`` ``OC_URL``).
 - :class:`OCReplicationDegraded` - write succeeded, but sync-replication
   timed out. Set on the response, not raised. Callers can opt to log /
   page on this signal.
@@ -92,6 +94,13 @@ class OCRateLimitedError(OCError):
 
 class OCServerError(OCError):
     """5xx. Server-side failure; retryable for idempotent ops."""
+
+
+class OCConfigError(OCError, ValueError):
+    """The client was given a connection setting it will not use, such as an
+    ``OC_URL`` that is plain ``http://`` to a host other than this machine, or
+    an empty ``OC_TOKEN``. Raised before any request is sent. Also a
+    :class:`ValueError`, like the client's other option checks."""
 
 
 class OCReplicationDegraded(Warning):

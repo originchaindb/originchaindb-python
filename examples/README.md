@@ -7,7 +7,7 @@ python -m pip install .
 python examples/query.py --help
 ```
 
-Set `OC_BASE_URL`, `OC_TENANT` and `OC_BEARER` using one database's connection details. If needed, set both `OC_DB_USER` and `OC_DB_KEY`. Use your shell's environment-variable syntax or a secret manager; no credentials belong in these files. Examples use a 30-second timeout and no automatic retries.
+Set two values: `OC_URL`, your database's address from Connect, and `OC_TOKEN`, an access token from Access tokens. Use `OC_URL` exactly as shown. Use your shell's environment-variable syntax or a secret manager; no credentials belong in these files. Examples use a 30-second timeout and no automatic retries.
 
 | Command | Additional environment | Existing data required |
 | --- | --- | --- |

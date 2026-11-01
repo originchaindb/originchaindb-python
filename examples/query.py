@@ -33,10 +33,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=["sql", "fts", "vector", "graph"])
     operation = parser.parse_args().operation
-    settings = {"timeout": 30, "max_retries": 0}
-    if "OC_DB_USER" in os.environ or "OC_DB_KEY" in os.environ:
-        settings.update(db_user=required("OC_DB_USER"), db_key=required("OC_DB_KEY"))
-    with OriginChain.from_env(**settings) as db:
+    # from_env() reads OC_URL (your database's address, from Connect) and
+    # OC_TOKEN (an access token). Nothing else is needed to connect.
+    with OriginChain.from_env(timeout=30, max_retries=0) as db:
         if operation == "sql":
             result = db.sql.query("SELECT $1 AS message", ["Hello from OriginChainDB"])
         elif operation == "fts":

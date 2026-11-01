@@ -18,34 +18,31 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e .
-      # Run only when approved nonproduction test credentials are configured.
+      # Run only when approved nonproduction test credentials are configured as
+      # the repository secrets OC_URL (the test database's address, from
+      # Connect) and OC_TOKEN (an access token for it). The query metrics step
+      # needs a token with query-administrator access.
       - run: python tests/e2e_smoke.py
         env:
           OC_REQUIRE_LIVE: "1"
-          OC_BASE: ${{ secrets.OC_BASE }}
-          OC_BEARER: ${{ secrets.OC_BEARER }}
-          OC_TENANT: ${{ secrets.OC_TENANT }}
-          OC_DB_USER: ${{ secrets.OC_DB_USER }}
-          OC_DB_KEY: ${{ secrets.OC_DB_KEY }}
+          OC_URL: ${{ secrets.OC_URL }}
+          OC_TOKEN: ${{ secrets.OC_TOKEN }}
           OC_NS: py_ci_${{ github.run_id }}
 
       - name: Query metrics (sync and async, read-only)
         run: python scripts/verify_query_metrics_live.py
         env:
-          OC_BASE: ${{ secrets.OC_BASE }}
-          OC_BEARER: ${{ secrets.OC_BEARER }}
-          OC_TENANT: ${{ secrets.OC_TENANT }}
+          OC_URL: ${{ secrets.OC_URL }}
+          OC_TOKEN: ${{ secrets.OC_TOKEN }}
 
       - name: Bulk DELETE results (sync and async, isolated fixtures)
         run: python scripts/verify_sql_delete_live.py
         env:
-          OC_BASE: ${{ secrets.OC_BASE }}
-          OC_BEARER: ${{ secrets.OC_BEARER }}
-          OC_TENANT: ${{ secrets.OC_TENANT }}
+          OC_URL: ${{ secrets.OC_URL }}
+          OC_TOKEN: ${{ secrets.OC_TOKEN }}
 
       - name: SQL values and projection compatibility (sync and async)
         run: python scripts/verify_sql_values_live.py
         env:
-          OC_BASE: ${{ secrets.OC_BASE }}
-          OC_BEARER: ${{ secrets.OC_BEARER }}
-          OC_TENANT: ${{ secrets.OC_TENANT }}
+          OC_URL: ${{ secrets.OC_URL }}
+          OC_TOKEN: ${{ secrets.OC_TOKEN }}

@@ -1,18 +1,22 @@
-"""Read-only live acceptance; no query history, tenant IDs or secrets are printed."""
+"""Read-only live acceptance; no query history, tenant IDs or secrets are printed.
+
+Reads OC_URL and OC_TOKEN, the same two values an application uses."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 
 from originchain import AsyncOriginChain, OriginChain, QueryMetricsResponse
 
 
-def verify(value: QueryMetricsResponse, tenant: str, seconds: int) -> int:
+def verify(value: QueryMetricsResponse, seconds: int, tenants: set) -> int:
     assert value["schema_version"] == 1
-    assert value["tenant_id"].upper() == tenant.upper()
+    # OC_URL is opaque, so the expected id is not read out of it. Every call
+    # must report one and the same non-empty id instead (checked in main()).
+    assert isinstance(value["tenant_id"], str) and value["tenant_id"]
+    tenants.add(value["tenant_id"].upper())
     assert value["scope"] == "local-process"
     assert value["bucket_seconds"] == seconds
     assert value["retention_seconds"] == 604800
@@ -38,30 +42,30 @@ def verify(value: QueryMetricsResponse, tenant: str, seconds: int) -> int:
 def main() -> int:
     if not __debug__:
         raise RuntimeError("Live assertions require a non-optimized Python interpreter")
-    options = {"base_url": os.environ["OC_BASE"], "bearer": os.environ["OC_BEARER"],
-               "tenant": os.environ["OC_TENANT"]}
-    # This endpoint requires service/admin credentials. Do not use impersonated
-    # database-user headers or bypass a server refusal.
+    # This endpoint requires a token with query-administrator access. Do not
+    # use impersonated database-user headers or bypass a server refusal.
     checks = {}
     observed_idle_null_buckets = {}
-    with OriginChain(**options) as client:
+    tenants: set = set()
+    with OriginChain.from_env() as client:
         for minutes, seconds in ((60, 60), (1440, 600), (10080, 3600)):
             name = f"sync_{minutes}_{seconds}"
             observed_idle_null_buckets[name] = verify(
-                client.query_metrics(minutes, seconds), options["tenant"], seconds,
+                client.query_metrics(minutes, seconds), seconds, tenants,
             )
             checks[name] = True
 
     async def run_async():
-        async with AsyncOriginChain(**options) as client:
+        async with AsyncOriginChain.from_env() as client:
             for minutes, seconds in ((60, 60), (1440, 600), (10080, 3600)):
                 name = f"async_{minutes}_{seconds}"
                 observed_idle_null_buckets[name] = verify(
-                    await client.query_metrics(minutes, seconds), options["tenant"], seconds,
+                    await client.query_metrics(minutes, seconds), seconds, tenants,
                 )
                 checks[name] = True
 
     asyncio.run(run_async())
+    assert len(tenants) == 1, "the sync and async clients reported different databases"
     print(json.dumps({"query_metrics_live": "passed", "checks": checks,
                       "observed_idle_null_buckets": observed_idle_null_buckets}, sort_keys=True))
     return 0

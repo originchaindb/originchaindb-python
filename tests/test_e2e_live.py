@@ -3,9 +3,8 @@
 Skipped unless ``OC_E2E_TEST=1`` so CI doesn't try to spin up a server.
 For manual validation:
 
-    OC_BASE_URL=http://localhost:8080 \
-    OC_BEARER=devtoken \
-    OC_TENANT=01HX1MYTESTTENANTXXXXXXXXXX \
+    OC_URL=http://localhost:8080/v1/tenants/01HX1MYTESTTENANTXXXXXXXXXX \
+    OC_TOKEN=devtoken \
     OC_E2E_TEST=1 \
     pytest sdk/python/tests/test_e2e_live.py -v
 

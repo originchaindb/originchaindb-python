@@ -13,10 +13,12 @@ async def run() -> dict:
     import originchain
     from originchain import AsyncOriginChain, OriginChain
 
-    for name in ("OC_BASE", "OC_TENANT", "OC_BEARER"):
+    for name in ("OC_URL", "OC_TOKEN"):
         if not os.environ.get(name):
             raise RuntimeError(f"Missing required live setting: {name}")
-    base, tenant, bearer = (os.environ[name] for name in ("OC_BASE", "OC_TENANT", "OC_BEARER"))
+    # OC_URL is used exactly as given, with the door path appended.
+    oc_url = os.environ["OC_URL"].rstrip("/")
+    token = os.environ["OC_TOKEN"]
     namespace = "py_values_" + uuid.uuid4().hex[:12]
     table = namespace + ".items"
     checks: dict[str, bool] = {}
@@ -25,28 +27,28 @@ async def run() -> dict:
     async def call(value):
         return await value if inspect.isawaitable(value) else value
 
-    with httpx.Client(base_url=base, headers={"Authorization": "Bearer " + bearer}, timeout=30) as raw:
+    with httpx.Client(headers={"Authorization": "Bearer " + token}, timeout=30) as raw:
         # SQL CREATE TABLE's separate response kind is only fixture setup.
-        created = raw.post(f"/v1/tenants/{tenant}/sql", json={"sql":
+        created = raw.post(f"{oc_url}/sql", json={"sql":
             f"CREATE TABLE {table} (id BIGINT PRIMARY KEY, grp TEXT, amount NUMERIC(10,2), "
             "ts TIMESTAMP, duration INTERVAL)"})
         if not created.is_success:
             raise RuntimeError("Could not create isolated SQL fixture")
-        with OriginChain(base_url=base, tenant=tenant, bearer=bearer) as sync:
+        with OriginChain.from_env() as sync:
             try:
                 inserted = sync.sql(f"INSERT INTO {table} (id,grp,amount,ts,duration) VALUES "
                     "(1,'g1',12.30,TIMESTAMP '2024-02-29 12:34:56.123456',INTERVAL '36:00:00.000001'),"
                     "(2,'g2',7.25,TIMESTAMP '2024-02-29 12:34:56.123456',INTERVAL '36:00:00.000001'),"
                     "(3,'g1',0.45,TIMESTAMP '2024-02-29 12:34:56.123456',INTERVAL '36:00:00.000001')")
                 assert inserted.inserted == 3
-                raw_row = raw.get(f"/v1/tenants/{tenant}/rows/{table}/1")
+                raw_row = raw.get(f"{oc_url}/rows/{table}/1")
                 assert raw_row.is_success
                 row_wire = raw_row.json()
                 typed_sql = f"SELECT amount,ts,duration FROM {table} WHERE id=1"
-                raw_sql = raw.post(f"/v1/tenants/{tenant}/sql", json={"sql": typed_sql})
+                raw_sql = raw.post(f"{oc_url}/sql", json={"sql": typed_sql})
                 assert raw_sql.is_success
                 sql_wire = raw_sql.json()
-                async with AsyncOriginChain(base_url=base, tenant=tenant, bearer=bearer) as asynchronous:
+                async with AsyncOriginChain.from_env() as asynchronous:
                     for label, client in [("sync", sync), ("async", asynchronous)]:
                         grouped = await call(client.sql.query(f"SELECT COUNT(*) AS n FROM {table} GROUP BY grp ORDER BY 1"))
                         assert grouped.rows == [{"n": 1}, {"n": 2}] and grouped.columns == ["n"]
@@ -75,7 +77,7 @@ async def run() -> dict:
                 observations["stored_timestamp_wire_type"] = type(row_wire["ts"]).__name__
                 observations["stored_microsecond_timestamp_verified"] = row_wire["ts"] == "2024-02-29T12:34:56.123456Z"
                 observations["stored_microsecond_interval_verified"] = row_wire["duration"] == "36:00:00.000001"
-                special = raw.post(f"/v1/tenants/{tenant}/sql", json={"sql": "SELECT CAST('NaN' AS DOUBLE PRECISION) AS value"})
+                special = raw.post(f"{oc_url}/sql", json={"sql": "SELECT CAST('NaN' AS DOUBLE PRECISION) AS value"})
                 observations["floating_special_cast_status"] = special.status_code
                 observations["server_backed_floating_special_conversion_verified"] = False
             finally:

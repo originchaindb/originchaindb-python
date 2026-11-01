@@ -6,15 +6,17 @@ Two clients ship in this package:
 - :class:`AsyncOriginChain` - asyncio, suitable for ASGI / async data
   pipelines.
 
-Both wrap the same ``/v1`` HTTP surface that the engine exposes; they
-encode bearer auth, idempotency keys, and retries so callers don't have
-to repeat themselves.
+Both reach the database over HTTPS with two values: ``OC_URL`` (your
+database's address, from Connect) and ``OC_TOKEN`` (an access token).
+Each call appends its path (``/sql``, ``/cypher``, ...) to ``OC_URL``
+exactly as given and sends ``Authorization: Bearer $OC_TOKEN``. They
+handle idempotency keys and retries so callers don't have to.
 
 Quick start::
 
     from originchain import OriginChain
 
-    db = OriginChain.from_env()                  # OC_BASE_URL + OC_BEARER
+    db = OriginChain.from_env()                  # OC_URL + OC_TOKEN
     db.schemas.register(open("orders.toml").read())
     db.rows.put("trading.orders", {"order_id": "o1", "symbol": "AAPL", "qty": 100})
     rows = db.sql.query("SELECT * FROM trading.orders WHERE symbol=$1 AND qty>$2", ["AAPL", 50]).rows
@@ -30,6 +32,7 @@ from .client import OriginChain
 from .async_client import AsyncOriginChain
 from .errors import (
     OCAuthError,
+    OCConfigError,
     OCError,
     OCNotFoundError,
     OCPaymentRequiredError,
@@ -80,6 +83,7 @@ __all__ = [
     # Errors
     "OCError",
     "OCAuthError",
+    "OCConfigError",
     "OCNotFoundError",
     "OCPaymentRequiredError",
     "OCRateLimitedError",

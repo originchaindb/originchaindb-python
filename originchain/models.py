@@ -685,7 +685,7 @@ class VectorHitV2:
 @dataclass(frozen=True)
 class TenantConfiguration:
     """Neutral, spec-based compute configuration from ``GET
-    /v1/tenants/:t/usage``.
+    $OC_URL/usage``.
 
     This REPLACES the internal weather codename (thunder/storm/cyclone/…)
     the engine used to surface - the SDK never exposes that codename.
@@ -719,7 +719,7 @@ class TenantConfiguration:
 
 @dataclass(frozen=True)
 class TenantUsage:
-    """Response of the engine's ``GET /v1/tenants/:t/usage``.
+    """Response of the engine's ``GET $OC_URL/usage``.
 
     ``tier`` is the neutral configuration slug (``entry`` / ``standard``
     / ``advanced`` / ``custom``) - never the internal weather codename,

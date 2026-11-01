@@ -4,6 +4,8 @@ The source in this repository is `0.11.0.dev0`. It has not been published as a p
 
 The supported query families are SQL, full-text search, vector search and graph queries. The synchronous and asynchronous natural-language helpers have been removed. Existing row, schema, transaction and diagnostic operations remain available.
 
+Clients connect with two values: `OC_URL`, the database's address from Connect, used exactly as given with each call's path appended, and `OC_TOKEN`, an access token. Plain `http://` is refused except to this machine. Earlier connection settings still work for this release with a one-time deprecation warning.
+
 SQL results preserve numeric and temporal strings and expose optional server-supplied `column_types`. Floating special values are decoded only when that metadata identifies a floating type. Stored microsecond precision and special-value support still depend on the deployed engine; the SDK does not enable them.
 
 The repository is maintained at `originchaindb/originchaindb-python`. The distribution and Python import remain `originchain`. See the README for development installation and the changelog for earlier package versions.

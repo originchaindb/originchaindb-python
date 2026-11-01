@@ -17,7 +17,16 @@ from typing import Any, Callable, Iterator
 import httpx
 import pytest
 
-from originchain import AsyncOriginChain, OriginChain
+from originchain import AsyncOriginChain, OriginChain, _connect
+
+
+@pytest.fixture(autouse=True)
+def _fresh_deprecation_warnings() -> Iterator[None]:
+    """Deprecation warnings are one-time per process; reset them so each test
+    sees the same behaviour regardless of order."""
+    _connect._reset_warnings_for_tests()
+    yield
+    _connect._reset_warnings_for_tests()
 
 
 def make_client(handler: Callable[[httpx.Request], httpx.Response]) -> OriginChain:
@@ -28,9 +37,8 @@ def make_client(handler: Callable[[httpx.Request], httpx.Response]) -> OriginCha
     =0`` keeps tests deterministic - retries would re-call the handler
     and confuse assertion counts."""
     client = OriginChain(
-        base_url="http://test.invalid",
-        bearer="test-bearer",
-        tenant="01HX1TESTTENANTXXXXXXXXXX1",
+        url="https://test.invalid/v1/tenants/01HX1TESTTENANTXXXXXXXXXX1",
+        token="test-bearer",
         max_retries=0,
     )
     client._client = httpx.Client(
@@ -80,8 +88,7 @@ def mock_client(request: Any, monkeypatch: Any) -> Iterator[Any]:
         monkeypatch.setattr(httpx, http_name, lambda **kw: http_cls(
             **kw, transport=httpx.MockTransport(handler)
         ))
-        client = cls(base_url="http://test.invalid", bearer="test-bearer",
-                     tenant="01HX1TESTTENANTXXXXXXXXXX1", max_retries=0, verify=False)
+        client = cls(url="https://test.invalid/v1/tenants/01HX1TESTTENANTXXXXXXXXXX1", token="test-bearer", max_retries=0, verify=False)
         clients.append(client)
         return _AwaitingProxy(client, loop) if loop is not None else client
 

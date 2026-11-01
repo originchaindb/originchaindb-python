@@ -20,6 +20,7 @@ import time
 import uuid
 import warnings
 from typing import Any, Iterable, List, Literal, Mapping, Optional, Sequence
+from urllib.parse import urlsplit
 
 import httpx
 from importlib.util import find_spec
@@ -32,6 +33,7 @@ from importlib.util import find_spec
 # originchain` keeps HTTP/1.1 so existing installs don't break.
 _HTTP2_AVAILABLE = find_spec("h2") is not None
 
+from . import _connect
 from . import _diagnostics as _diag
 from . import _retry
 from ._identity import identity_headers
@@ -102,15 +104,15 @@ class _Schemas:
         self._p = parent
 
     def list(self) -> list[str]:
-        return self._p._request("GET", f"/v1/tenants/{self._p.tenant}/schemas").json()
+        return self._p._request("GET", "schemas").json()
 
     def get(self, schema: str) -> str:
-        return self._p._request("GET", f"/v1/tenants/{self._p.tenant}/schemas/{schema}").text
+        return self._p._request("GET", f"schemas/{schema}").text
 
     def register(self, toml_source: str) -> dict[str, Any]:
         return self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/schemas",
+            "schemas",
             content=toml_source.encode("utf-8"),
             headers={"Content-Type": "text/plain"},
         ).json()
@@ -128,7 +130,7 @@ class _Rows:
         This endpoint has no column-type envelope: strings such as ``NaN``
         are preserved rather than guessed to be floating-point values.
         """
-        return self._p._request("GET", f"/v1/tenants/{self._p.tenant}/rows/{schema}/{pk}").json()
+        return self._p._request("GET", f"rows/{schema}/{pk}").json()
 
     def put(
         self,
@@ -145,7 +147,7 @@ class _Rows:
         )
         return self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/rows/{schema}",
+            f"rows/{schema}",
             json=row,
             params=params,
             headers=headers,
@@ -196,7 +198,7 @@ class _Rows:
     ) -> int:
         resp = self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/rows/{schema}/_batch",
+            f"rows/{schema}/_batch",
             json=list(rows),
             params=params,
             headers={"Idempotency-Key": f"{base_idem}-c{chunk_no}"},
@@ -215,7 +217,7 @@ from ._namespaces import (
 
 class _Graph(_GraphNamespaceExtended):
     """``db.graph.*`` namespace. Wraps the five graph endpoints under
-    ``/v1/tenants/:t/graph/:schema/{neighbors,reverse,bfs,path,dijkstra}``
+    ``$OC_URL/graph/:schema/{neighbors,reverse,bfs,path,dijkstra}``
     plus the typed-namespace v1 extensions (``k_shortest`` /
     ``random_walk`` / ``louvain`` / ``pagerank`` / ``label_propagation``
     / ``betweenness`` / ``shortest_path``) mixed in from
@@ -229,7 +231,7 @@ class _Graph(_GraphNamespaceExtended):
         params = {"rel": rel, "pk": pk}
         pks = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/neighbors",
+            f"graph/{schema}/neighbors",
             params=params,
         ).json()
         return [Neighbor(pk=str(p), depth=1) for p in pks]
@@ -238,7 +240,7 @@ class _Graph(_GraphNamespaceExtended):
         params = {"rel": rel, "pk": pk}
         pks = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/reverse",
+            f"graph/{schema}/reverse",
             params=params,
         ).json()
         return [Neighbor(pk=str(p), depth=1) for p in pks]
@@ -254,7 +256,7 @@ class _Graph(_GraphNamespaceExtended):
         params = {"rel": rel, "pk": pk, "max_depth": str(max_depth)}
         hits = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/bfs",
+            f"graph/{schema}/bfs",
             params=params,
         ).json()
         return [GraphBfsHit._from_payload(h) for h in hits]
@@ -271,7 +273,7 @@ class _Graph(_GraphNamespaceExtended):
         params = {"rel": rel, "src": src, "dst": dst, "max_depth": str(max_depth)}
         body = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/path",
+            f"graph/{schema}/path",
             params=params,
         ).json()
         return GraphPath(reachable=bool(body.get("reachable", False)))
@@ -295,7 +297,7 @@ class _Graph(_GraphNamespaceExtended):
         }
         body = self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/dijkstra",
+            f"graph/{schema}/dijkstra",
             params=params,
         ).json()
         cost = body.get("cost")
@@ -305,15 +307,16 @@ class _Graph(_GraphNamespaceExtended):
 class OriginChain:
     """Synchronous OriginChain client.
 
-    Use :meth:`from_env` for the standard env-var bootstrap, or pass
-    ``base_url`` / ``bearer`` / ``tenant`` directly for tests."""
+    Use :meth:`from_env` to read ``OC_URL`` and ``OC_TOKEN``, or pass
+    ``url=`` / ``token=`` directly. ``url`` is your database's address from
+    Connect, used exactly as given: each call appends its path (``/sql``,
+    ``/cypher``, ...) to it."""
 
     def __init__(
         self,
         *,
-        base_url: str,
-        bearer: str,
-        tenant: str,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT_S,
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_retry_time: float = _retry.DEFAULT_MAX_RETRY_TIME,
@@ -323,12 +326,29 @@ class OriginChain:
         diagnostics: bool = False,
         db_user: Optional[str] = None,
         db_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        bearer: Optional[str] = None,
+        tenant: Optional[str] = None,
     ) -> None:
+        # `base_url=` + `tenant=`, `bearer=` and `db_user=` + `db_key=` are
+        # deprecated: they still work for one release, warning once each.
+        url, token, old_tenant = _connect.resolve_args(
+            "OriginChain", url, token, base_url, bearer, tenant, stacklevel=2,
+        )
         _retry.validate_options(max_retries, max_retry_time)
         identity = identity_headers(db_user, db_key)
-        self.base_url = base_url.rstrip("/")
-        self.bearer = bearer
-        self.tenant = tenant
+        if identity:
+            _connect.warn_identity_arguments("OriginChain", stacklevel=2)
+        #: The database's address (``OC_URL``), without a trailing ``/``.
+        self.url = url
+        self._origin = _connect.origin_of(url)
+        #: Deprecated: the address's origin. Kept for one release.
+        self.base_url = self._origin
+        self.token = token
+        #: Deprecated alias of :attr:`token`. Kept for one release.
+        self.bearer = token
+        #: Deprecated: set only when the client was built with ``tenant=``.
+        self.tenant = old_tenant
         self.max_retries = max_retries
         self.max_retry_time = max_retry_time
         # Opt-in client diagnostics (off by default); see `_diagnostics`.
@@ -336,14 +356,14 @@ class OriginChain:
             _diag.SyncReporter(self._send_diagnostics) if diagnostics else None
         )
         self._client = httpx.Client(
-            base_url=self.base_url,
+            base_url=self.url,
             timeout=timeout,
             verify=verify,
             http2=_HTTP2_AVAILABLE,
             limits=_pool_limits(keepalive_expiry),
             headers={
                 **identity,
-                "Authorization": f"Bearer {bearer}",
+                "Authorization": f"Bearer {token}",
                 "User-Agent": user_agent or "originchaindb-python/0.11.0.dev0",
             },
         )
@@ -358,24 +378,31 @@ class OriginChain:
         self.vector = _VectorNamespace(self)
         self.fts = _FtsNamespace(self)
         # 0.5: admin surface for the per-tenant replication-mode config
-        # routes that land under `/v1/admin/*` (not under `/v1/tenants/*`).
+        # routes under `/v1/admin/*`, which live outside the database's
+        # address and are resolved against its origin.
         # Routes through the same `_request` helper; auth is whatever
         # the parent client was constructed with.
         self.admin = _AdminNamespace(self)
 
     @classmethod
     def from_env(cls, **kwargs: Any) -> "OriginChain":
-        """Build a client from ``OC_BASE_URL``, ``OC_BEARER``, ``OC_TENANT``.
+        """Build a client from ``OC_URL`` and ``OC_TOKEN``. Nothing else is needed.
 
-        Raises :class:`OCError` if any are missing - callers should set
-        them via their secrets manager, not commit them."""
-        try:
-            base_url = os.environ["OC_BASE_URL"]
-            bearer = os.environ["OC_BEARER"]
-            tenant = os.environ["OC_TENANT"]
-        except KeyError as e:
-            raise OCError(f"missing required env var: {e.args[0]}") from None
-        return cls(base_url=base_url, bearer=bearer, tenant=tenant, **kwargs)
+        ``OC_URL`` is your database's address from Connect; ``OC_TOKEN`` is an
+        access token. Raises :class:`OCConfigError` (an :class:`OCError`) if
+        either is missing or refused. Set them from your secrets manager; do
+        not commit them. Pass other options as keyword arguments."""
+        url, token = _connect.resolve_env(os.environ, stacklevel=2)
+        return cls(url=url, token=token, **kwargs)
+
+    def _endpoint(self, path: str) -> str:
+        """The URL for ``path``. A door path (``sql``, ``cypher``, ...) is
+        appended to ``OC_URL`` exactly as given. A path starting with ``/``
+        names a route outside the database (``/health``, ``/v1/admin/...``)
+        and is resolved against the address's origin."""
+        if path.startswith("/"):
+            return self._origin + path
+        return self.url + "/" + path
 
     # ── Top-level convenience ─────────────────────────────────────────
 
@@ -385,7 +412,7 @@ class OriginChain:
     def query(self, plan: dict[str, Any]) -> list[Any]:
         """Structured plan execution. The plan format is in the engine docs."""
         return self._request(
-            "POST", f"/v1/tenants/{self.tenant}/query", json=plan
+            "POST", "query", json=plan
         ).json()
 
     def query_metrics(
@@ -404,7 +431,7 @@ class OriginChain:
         Uses this client's timeout, retries, identity and error handling.
         """
         response = self._request(
-            "GET", f"/v1/tenants/{self.tenant}/query-metrics",
+            "GET", "query-metrics",
             params=_query_metrics_params(minutes, bucket_seconds),
         )
         return response.json()
@@ -418,7 +445,7 @@ class OriginChain:
         :attr:`TenantUsage.configuration` for the full spec + list
         price. Both are ``None`` in legacy per-addon mode."""
         body = self._request(
-            "GET", f"/v1/tenants/{self.tenant}/usage"
+            "GET", "usage"
         ).json()
         return TenantUsage._from_payload(body)
 
@@ -454,7 +481,7 @@ class OriginChain:
             payload["params"] = _positional_params(params)
         body = self._request(
             "POST",
-            f"/v1/tenants/{self.tenant}/sql",
+            "sql",
             json=payload,
             retry_safe=retry_safe,
             headers={"Idempotency-Key": idempotency_key} if idempotency_key is not None else None,
@@ -482,6 +509,31 @@ class OriginChain:
         if not isinstance(first, dict):
             return {"value": first}
         return dict(first)
+
+    # ── Cypher ────────────────────────────────────────────────────────
+
+    def cypher(
+        self, query: str, params: Optional[Mapping[str, Any]] = None, *,
+        default_schema: Optional[str] = None,
+        retry_safe: bool = False, idempotency_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Run a Cypher query: ``POST $OC_URL/cypher``.
+
+        ``params`` binds by name: ``$name`` in ``query`` takes
+        ``params["name"]``. ``default_schema`` is the table a node pattern
+        without a label reads. Returns the response JSON unchanged: a read
+        is ``{"kind": "select", "rows": [...]}``; a write reports a count
+        such as ``rows_inserted``, ``rows_affected`` or ``rows_deleted``.
+        Not retried unless ``retry_safe=True``."""
+        from ._namespaces import _cypher_body
+
+        return self._request(
+            "POST",
+            "cypher",
+            json=_cypher_body(query, params, default_schema),
+            retry_safe=retry_safe,
+            headers={"Idempotency-Key": idempotency_key} if idempotency_key is not None else None,
+        ).json()
 
     # ── Vector ────────────────────────────────────────────────────────
 
@@ -511,7 +563,7 @@ class OriginChain:
             body["metadata"] = dict(metadata)
         self._request(
             "POST",
-            f"/v1/tenants/{self.tenant}/vector/{table}/put",
+            f"vector/{table}/put",
             json=body,
         )
 
@@ -545,7 +597,7 @@ class OriginChain:
             body["filter"] = dict(filter)
         hits = self._request(
             "POST",
-            f"/v1/tenants/{self.tenant}/vector/{table}/topk",
+            f"vector/{table}/topk",
             json=body,
         ).json()
         return [VectorHit._from_payload(h) for h in hits]
@@ -565,7 +617,7 @@ class OriginChain:
         ``doc_id`` overwrite."""
         self._request(
             "POST",
-            f"/v1/tenants/{self.tenant}/fts/{table}/{field}",
+            f"fts/{table}/{field}",
             json={"doc_id": doc_id, "text": text},
         )
 
@@ -591,7 +643,7 @@ class OriginChain:
             params["k"] = str(k)
         body = self._request(
             "GET",
-            f"/v1/tenants/{self.tenant}/fts/{table}/{field}",
+            f"fts/{table}/{field}",
             params=params,
         ).json()
         if mode == "bm25":
@@ -616,7 +668,7 @@ class OriginChain:
         # Straight to the engine, not through `_request`: a report never
         # reports itself, retries, or carries correlation headers.
         self._client.post(
-            f"/v1/tenants/{self.tenant}/diagnostics",
+            self._endpoint("diagnostics"),
             json={"events": batch},
             timeout=_diag.SEND_TIMEOUT_S,
         )
@@ -652,6 +704,9 @@ class OriginChain:
         # One logical request id per call, the same on every retry; the attempt
         # number changes. The engine records both next to its own request id.
         logical_id, headers = _diag.correlate(headers)
+        target = self._endpoint(path)
+        # Diagnostics report the path this call actually requested.
+        report_path = urlsplit(target).path
         report = self._diagnostics
         last_exc: Optional[Exception] = None
         for attempt in range(retries + 1):
@@ -659,7 +714,7 @@ class OriginChain:
             try:
                 resp = self._client.request(
                     method,
-                    path,
+                    target,
                     params=params,
                     json=json,
                     content=content,
@@ -669,7 +724,7 @@ class OriginChain:
                 last_exc = e
                 if report is not None:
                     report.push(_diag.event(
-                        method=method, path=path, started=started,
+                        method=method, path=report_path, started=started,
                         logical_request_id=logical_id, attempt=attempt + 1, failure=e,
                     ))
                 network_wait = self._backoff(attempt)
@@ -685,7 +740,7 @@ class OriginChain:
             if resp.status_code < 400:
                 if report is not None:
                     report.push(_diag.event(
-                        method=method, path=path, started=started,
+                        method=method, path=report_path, started=started,
                         logical_request_id=logical_id, attempt=attempt + 1,
                         status=resp.status_code, request_id=request_id,
                     ))
@@ -700,7 +755,7 @@ class OriginChain:
 
             if report is not None:
                 report.push(_diag.event(
-                    method=method, path=path, started=started,
+                    method=method, path=report_path, started=started,
                     logical_request_id=logical_id, attempt=attempt + 1,
                     status=resp.status_code, request_id=request_id,
                     code=_diag.error_code(_json_or_none(resp)),
