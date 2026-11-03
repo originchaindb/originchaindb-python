@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 
 from originchain import AsyncOriginChain, OriginChain, __version__
@@ -19,7 +18,7 @@ def schema(namespace: str, table: str) -> str:
 
 def sync_checks(options: dict, namespace: str, checks: dict) -> None:
     name = namespace + ".sync_items"
-    with OriginChain(**options) as client:
+    with OriginChain.from_env(**options) as client:
         client.schemas.register(schema(namespace, "sync_items"))
         try:
             client.rows.put(name, {"id": "first"})
@@ -43,7 +42,7 @@ def sync_checks(options: dict, namespace: str, checks: dict) -> None:
 
 async def async_checks(options: dict, namespace: str, checks: dict) -> None:
     name = namespace + ".async_items"
-    async with AsyncOriginChain(**options) as client:
+    async with AsyncOriginChain.from_env(**options) as client:
         await client.schemas.register(schema(namespace, "async_items"))
         try:
             await client.rows.put(name, {"id": "first"})
@@ -66,12 +65,8 @@ async def async_checks(options: dict, namespace: str, checks: dict) -> None:
 
 
 def run() -> dict:
-    options = {
-        "base_url": os.environ["OC_BASE"],
-        "tenant": os.environ["OC_TENANT"],
-        "bearer": os.environ["OC_BEARER"],
-        "max_retries": 1,
-    }
+    # Clients are built with from_env(**options), which reads OC_URL and OC_TOKEN.
+    options = {"max_retries": 1}
     namespace = "sdk_delete_" + uuid.uuid4().hex[:12]
     checks: dict[str, bool] = {}
     sync_checks(options, namespace, checks)

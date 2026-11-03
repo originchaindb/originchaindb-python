@@ -8,7 +8,7 @@ joins the engine's record.
 With ``diagnostics=True`` the client also reports what it saw of each attempt -
 method, path, outcome, duration, the status it received or that nothing was sent
 or received, and the request ids - to the customer's own engine
-(``POST /v1/tenants/:tenant/diagnostics``, with the client's bearer). The engine
+(``POST $OC_URL/diagnostics``, with the client's token). The engine
 matches the path to its route template and forwards only the template, so table,
 key and index names stay on that engine. Nothing else is sent: no SQL, no
 parameters, no row data, no search text, no error messages, no keys. Query strings
@@ -33,7 +33,7 @@ from typing import Any, Callable
 import httpx
 
 #: The SDK version reported with diagnostics; kept equal to pyproject.toml by a test.
-SDK_VERSION = "0.11.0.dev0"
+SDK_VERSION = "1.0.0rc1"
 
 LOGICAL_REQUEST_ID_HEADER = "X-OC-Logical-Request-Id"
 ATTEMPT_HEADER = "X-OC-Attempt"
@@ -160,6 +160,12 @@ def event(
     reported. ``started`` is a ``time.perf_counter()`` reading."""
     method = method.upper()
     path = re.split(r"[?#]", path, maxsplit=1)[0]
+    # The engine's intake refuses a WHOLE batch for one event whose path is not
+    # under /v1/tenants/ (oc-http client_diagnostics.rs), so such an event is
+    # never queued. This only decides what diagnostics report; it never changes
+    # where a request is sent. Routes outside the database (/health) are not
+    # reported, and neither are calls to an address without that prefix until
+    # the intake accepts them.
     if method not in _METHODS or not path.startswith("/v1/tenants/") or len(path) > _MAX_PATH:
         return None
     duration = (time.perf_counter() - started) * 1000.0

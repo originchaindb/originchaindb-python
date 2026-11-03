@@ -24,6 +24,10 @@ from originchain import (
 
 TENANT = "01HX1TESTTENANTXXXXXXXXXX1"
 
+# The admin namespace is deprecated for one release; its one-time warning is
+# asserted in tests/test_connect.py. These tests keep its wire shape pinned.
+pytestmark = pytest.mark.filterwarnings(r"ignore:.*\.admin\..*is deprecated:FutureWarning")
+
 
 def test_admin_install_tenant_config_active_passive(mock_client) -> None:
     seen: dict = {}

@@ -17,7 +17,7 @@ way, the SDK gets bumped major.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Tuple, Union
 
 
@@ -284,18 +284,66 @@ class SqlExecResult:
     rows_affected: Optional[int] = None
     schema: Optional[str] = None
     rows_buffered: Optional[int] = None
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    columns: Optional[list[str]] = None
+    column_types: Optional[dict[str, str]] = None
+    results: list[SqlExecResult] = field(default_factory=list)
+    stopped_on_error: bool = False
+    raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+    @property
+    def failed(self) -> bool:
+        """Whether this result or a nested statement reports a failure."""
+        return (self.stopped_on_error or self.kind == "error" or "error" in self.raw
+                or any(result.failed for result in self.results))
 
 
 def _decode_sql_exec_response(payload: Mapping[str, Any]) -> SqlExecResult:
-    decoded = _decode_sql_response(payload)
-    if isinstance(decoded, SqlInsert):
-        return SqlExecResult(kind=decoded.kind, schema=decoded.schema,
-                             rows_affected=decoded.inserted)
-    if isinstance(decoded, SqlDelete):
-        return SqlExecResult(kind=decoded.kind, schema=decoded.schema,
-                             rows_affected=decoded.rows_affected,
-                             rows_buffered=decoded.rows_buffered)
-    return SqlExecResult(kind=decoded.kind, rows_affected=0)
+    """Decode the complete SQL envelope without guessing whether a write committed.
+
+    Unknown statement kinds and additional fields survive in ``raw``. Numeric
+    and temporal strings retain their wire representation. A failed batch is
+    returned by this decoder so the caller can attach all partial results to an
+    OCBatchError; it must never be silently treated as an empty success.
+    """
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("kind"), str):
+        from .errors import OCProtocolError
+        raise OCProtocolError("SQL response must be an object with a string kind")
+    kind = payload["kind"]
+    rows = payload.get("rows", [])
+    results = payload.get("results", [])
+    stopped = payload.get("stopped_on_error", False)
+    if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+            or not isinstance(results, list) or not isinstance(stopped, bool)):
+        from .errors import OCProtocolError
+        raise OCProtocolError("SQL response contains invalid rows, results or batch state")
+    columns = payload.get("columns", payload.get("returning"))
+    if columns is not None and (not isinstance(columns, list)
+                               or any(not isinstance(c, str) for c in columns)):
+        from .errors import OCProtocolError
+        raise OCProtocolError("SQL response columns must be an array of strings")
+    count = _optional_row_count(payload, "rows_affected")
+    if count is None and kind == "insert":
+        count = _optional_row_count(payload, "inserted")
+    if count is None and kind == "select":
+        count = 0
+    children = []
+    for child in results:
+        if not isinstance(child, Mapping):
+            from .errors import OCProtocolError
+            raise OCProtocolError("SQL batch result must be an object")
+        # Error entries can omit kind. Preserve their full envelope for callers.
+        if "error" in child and "kind" not in child:
+            children.append(SqlExecResult(kind="error", raw=dict(child)))
+        else:
+            children.append(_decode_sql_exec_response(child))
+    return SqlExecResult(
+        kind=kind, rows_affected=count, schema=payload.get("schema"),
+        rows_buffered=_optional_row_count(payload, "rows_buffered"),
+        rows=[dict(row) for row in rows], columns=columns,
+        column_types=_sql_column_types(payload), results=children,
+        stopped_on_error=stopped, raw=dict(payload),
+    )
 
 
 @dataclass(frozen=True)
@@ -355,6 +403,7 @@ class FtsResult:
 
     hits: list[FtsHitWithHighlights]
     facets: Optional[dict[str, list[FacetBucket]]] = None
+    raw: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -663,6 +712,7 @@ class VectorHitV2:
     vec_id: str
     score: float
     metadata: Optional[dict[str, Any]] = None
+    raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def id(self) -> str:
@@ -676,6 +726,7 @@ class VectorHitV2:
             vec_id=str(payload.get("id") or payload.get("vec_id")),
             score=float(payload["score"]),
             metadata=md,
+            raw=dict(payload),
         )
 
 
@@ -685,7 +736,7 @@ class VectorHitV2:
 @dataclass(frozen=True)
 class TenantConfiguration:
     """Neutral, spec-based compute configuration from ``GET
-    /v1/tenants/:t/usage``.
+    $OC_URL/usage``.
 
     This REPLACES the internal weather codename (thunder/storm/cyclone/…)
     the engine used to surface - the SDK never exposes that codename.
@@ -719,7 +770,7 @@ class TenantConfiguration:
 
 @dataclass(frozen=True)
 class TenantUsage:
-    """Response of the engine's ``GET /v1/tenants/:t/usage``.
+    """Response of the engine's ``GET $OC_URL/usage``.
 
     ``tier`` is the neutral configuration slug (``entry`` / ``standard``
     / ``advanced`` / ``custom``) - never the internal weather codename,

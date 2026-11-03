@@ -15,15 +15,19 @@ catches type errors. Both clients expose the same operation namespaces.
 
 from __future__ import annotations
 
+from ._paths import segment
+
 import asyncio
 import json as _json
 import os
 import time as _time
 import warnings
 from typing import Any, AsyncIterable, AsyncIterator, Iterable, List, Literal, Mapping, Optional, Sequence
+from urllib.parse import urlsplit
 
 import httpx
 
+from . import _connect
 from . import _diagnostics as _diag
 from . import _retry
 from ._identity import identity_headers
@@ -75,17 +79,17 @@ class _AsyncSchemas:
         self._p = parent
 
     async def list(self) -> list[str]:
-        r = await self._p._request("GET", f"/v1/tenants/{self._p.tenant}/schemas")
+        r = await self._p._request("GET", "schemas")
         return r.json()
 
     async def get(self, schema: str) -> str:
-        r = await self._p._request("GET", f"/v1/tenants/{self._p.tenant}/schemas/{schema}")
+        r = await self._p._request("GET", f"schemas/{segment(schema)}")
         return r.text
 
     async def register(self, toml_source: str) -> dict[str, Any]:
         r = await self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/schemas",
+            "schemas",
             content=toml_source.encode("utf-8"),
             headers={"Content-Type": "text/plain"},
         )
@@ -102,7 +106,7 @@ class _AsyncRows:
         This endpoint has no column-type envelope: strings such as ``NaN``
         are preserved rather than guessed to be floating-point values.
         """
-        r = await self._p._request("GET", f"/v1/tenants/{self._p.tenant}/rows/{schema}/{pk}")
+        r = await self._p._request("GET", f"rows/{segment(schema)}/{segment(pk)}")
         return r.json()
 
     async def put(
@@ -117,7 +121,7 @@ class _AsyncRows:
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else {}
         r = await self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/rows/{schema}",
+            f"rows/{segment(schema)}",
             json=row,
             params=params,
             headers=headers,
@@ -173,7 +177,7 @@ class _AsyncRows:
     ) -> int:
         response = await self._p._request(
             "POST",
-            f"/v1/tenants/{self._p.tenant}/rows/{schema}/_batch",
+            f"rows/{segment(schema)}/_batch",
             json=list(rows),
             params=params,
             headers={"Idempotency-Key": f"{base_idem}-c{chunk_no}"},
@@ -198,11 +202,15 @@ class _AsyncGraph(_AsyncGraphNamespaceExtended):
     def __init__(self, parent: "AsyncOriginChain") -> None:
         self._p = parent
 
+    async def query(self, cypher: str, params: Optional[Mapping[str, Any]] = None) -> Any:
+        """Submit a Cypher query with named parameters."""
+        return await self._p.cypher(cypher, params)
+
     async def neighbors(self, schema: str, *, rel: str, pk: str) -> List[Neighbor]:
         params = {"rel": rel, "pk": pk}
         r = await self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/neighbors",
+            f"graph/{segment(schema)}/neighbors",
             params=params,
         )
         return [Neighbor(pk=str(p), depth=1) for p in r.json()]
@@ -213,7 +221,7 @@ class _AsyncGraph(_AsyncGraphNamespaceExtended):
         params = {"rel": rel, "pk": pk}
         r = await self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/reverse",
+            f"graph/{segment(schema)}/reverse",
             params=params,
         )
         return [Neighbor(pk=str(p), depth=1) for p in r.json()]
@@ -229,7 +237,7 @@ class _AsyncGraph(_AsyncGraphNamespaceExtended):
         params = {"rel": rel, "pk": pk, "max_depth": str(max_depth)}
         r = await self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/bfs",
+            f"graph/{segment(schema)}/bfs",
             params=params,
         )
         return [GraphBfsHit._from_payload(h) for h in r.json()]
@@ -246,7 +254,7 @@ class _AsyncGraph(_AsyncGraphNamespaceExtended):
         params = {"rel": rel, "src": src, "dst": dst, "max_depth": str(max_depth)}
         r = await self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/path",
+            f"graph/{segment(schema)}/path",
             params=params,
         )
         body = r.json()
@@ -269,7 +277,7 @@ class _AsyncGraph(_AsyncGraphNamespaceExtended):
         }
         r = await self._p._request(
             "GET",
-            f"/v1/tenants/{self._p.tenant}/graph/{schema}/dijkstra",
+            f"graph/{segment(schema)}/dijkstra",
             params=params,
         )
         body = r.json()
@@ -278,14 +286,16 @@ class _AsyncGraph(_AsyncGraphNamespaceExtended):
 
 
 class AsyncOriginChain:
-    """asyncio-native client. ``async with`` for resource cleanup."""
+    """asyncio-native client. ``async with`` for resource cleanup.
+
+    Use :meth:`from_env` to read ``OC_URL`` and ``OC_TOKEN``, or pass
+    ``url=`` / ``token=`` directly, as for :class:`OriginChain`."""
 
     def __init__(
         self,
         *,
-        base_url: str,
-        bearer: str,
-        tenant: str,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT_S,
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_retry_time: float = _retry.DEFAULT_MAX_RETRY_TIME,
@@ -295,12 +305,28 @@ class AsyncOriginChain:
         diagnostics: bool = False,
         db_user: Optional[str] = None,
         db_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        bearer: Optional[str] = None,
+        tenant: Optional[str] = None,
     ) -> None:
+        # Deprecated arguments work for one release, warning once each.
+        url, token, old_tenant = _connect.resolve_args(
+            "AsyncOriginChain", url, token, base_url, bearer, tenant, stacklevel=2,
+        )
         _retry.validate_options(max_retries, max_retry_time)
         identity = identity_headers(db_user, db_key)
-        self.base_url = base_url.rstrip("/")
-        self.bearer = bearer
-        self.tenant = tenant
+        if identity:
+            _connect.warn_identity_arguments("AsyncOriginChain", stacklevel=2)
+        #: The database's address (``OC_URL``), without a trailing ``/``.
+        self.url = url
+        self._origin = _connect.origin_of(url)
+        #: Deprecated: the address's origin. Kept for one release.
+        self.base_url = self._origin
+        self.token = token
+        #: Deprecated alias of :attr:`token`. Kept for one release.
+        self.bearer = token
+        #: Deprecated: set only when the client was built with ``tenant=``.
+        self.tenant = old_tenant
         self.max_retries = max_retries
         self.max_retry_time = max_retry_time
         # Opt-in client diagnostics (off by default); see `_diagnostics`.
@@ -308,15 +334,15 @@ class AsyncOriginChain:
             _diag.AsyncReporter(self._send_diagnostics) if diagnostics else None
         )
         self._client = httpx.AsyncClient(
-            base_url=self.base_url,
+            base_url=self.url,
             timeout=timeout,
             verify=verify,
             http2=_HTTP2_AVAILABLE,
             limits=_pool_limits(keepalive_expiry),
             headers={
                 **identity,
-                "Authorization": f"Bearer {bearer}",
-                "User-Agent": user_agent or "originchaindb-python/0.11.0.dev0",
+                "Authorization": f"Bearer {token}",
+                "User-Agent": user_agent or "originchaindb-python/1.0.0rc1",
             },
         )
         self.schemas = _AsyncSchemas(self)
@@ -329,13 +355,17 @@ class AsyncOriginChain:
 
     @classmethod
     def from_env(cls, **kwargs: Any) -> "AsyncOriginChain":
-        try:
-            base_url = os.environ["OC_BASE_URL"]
-            bearer = os.environ["OC_BEARER"]
-            tenant = os.environ["OC_TENANT"]
-        except KeyError as e:
-            raise OCError(f"missing required env var: {e.args[0]}") from None
-        return cls(base_url=base_url, bearer=bearer, tenant=tenant, **kwargs)
+        """Build a client from ``OC_URL`` and ``OC_TOKEN``. Nothing else is needed.
+
+        See :meth:`OriginChain.from_env`."""
+        url, token = _connect.resolve_env(os.environ, stacklevel=2)
+        return cls(url=url, token=token, **kwargs)
+
+    def _endpoint(self, path: str) -> str:
+        """See :meth:`OriginChain._endpoint`."""
+        if path.startswith("/"):
+            return self._origin + path
+        return self.url + "/" + path
 
     async def health(self) -> dict[str, Any]:
         r = await self._request("GET", "/health")
@@ -343,7 +373,7 @@ class AsyncOriginChain:
 
     async def query(self, plan: dict[str, Any]) -> list[Any]:
         r = await self._request(
-            "POST", f"/v1/tenants/{self.tenant}/query", json=plan
+            "POST", "query", json=plan
         )
         return r.json()
 
@@ -363,7 +393,7 @@ class AsyncOriginChain:
         Uses this client's timeout, retries, identity and error handling.
         """
         response = await self._request(
-            "GET", f"/v1/tenants/{self.tenant}/query-metrics",
+            "GET", "query-metrics",
             params=_query_metrics_params(minutes, bucket_seconds),
         )
         return response.json()
@@ -376,7 +406,7 @@ class AsyncOriginChain:
         internal weather codename is never exposed. Prefer
         :attr:`TenantUsage.configuration` for the full spec. Both are
         ``None`` in legacy per-addon mode."""
-        r = await self._request("GET", f"/v1/tenants/{self.tenant}/usage")
+        r = await self._request("GET", "usage")
         return TenantUsage._from_payload(r.json())
 
     # ── SQL ───────────────────────────────────────────────────────────
@@ -393,7 +423,7 @@ class AsyncOriginChain:
             payload["params"] = _positional_params(params)
         r = await self._request(
             "POST",
-            f"/v1/tenants/{self.tenant}/sql",
+            "sql",
             json=payload,
             retry_safe=retry_safe,
             headers={"Idempotency-Key": idempotency_key} if idempotency_key is not None else None,
@@ -418,6 +448,26 @@ class AsyncOriginChain:
             return {"value": first}
         return dict(first)
 
+    # ── Cypher ────────────────────────────────────────────────────────
+
+    async def cypher(
+        self, query: str, params: Optional[Mapping[str, Any]] = None, *,
+        default_schema: Optional[str] = None,
+        retry_safe: bool = False, idempotency_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Run a Cypher query: ``POST $OC_URL/cypher``. See
+        :meth:`OriginChain.cypher`."""
+        from ._namespaces import _cypher_body
+
+        r = await self._request(
+            "POST",
+            "cypher",
+            json=_cypher_body(query, params, default_schema),
+            retry_safe=retry_safe,
+            headers={"Idempotency-Key": idempotency_key} if idempotency_key is not None else None,
+        )
+        return r.json()
+
     # ── Vector ────────────────────────────────────────────────────────
 
     async def vector_put(
@@ -440,7 +490,7 @@ class AsyncOriginChain:
             body["metadata"] = dict(metadata)
         await self._request(
             "POST",
-            f"/v1/tenants/{self.tenant}/vector/{table}/put",
+            f"vector/{segment(table)}/put",
             json=body,
         )
 
@@ -467,7 +517,7 @@ class AsyncOriginChain:
             body["filter"] = dict(filter)
         r = await self._request(
             "POST",
-            f"/v1/tenants/{self.tenant}/vector/{table}/topk",
+            f"vector/{segment(table)}/topk",
             json=body,
         )
         return [VectorHit._from_payload(h) for h in r.json()]
@@ -484,7 +534,7 @@ class AsyncOriginChain:
     ) -> None:
         await self._request(
             "POST",
-            f"/v1/tenants/{self.tenant}/fts/{table}/{field}",
+            f"fts/{segment(table)}/{segment(field)}",
             json={"doc_id": doc_id, "text": text},
         )
 
@@ -502,7 +552,7 @@ class AsyncOriginChain:
             params["k"] = str(k)
         r = await self._request(
             "GET",
-            f"/v1/tenants/{self.tenant}/fts/{table}/{field}",
+            f"fts/{segment(table)}/{segment(field)}",
             params=params,
         )
         body = r.json()
@@ -524,7 +574,7 @@ class AsyncOriginChain:
     async def _send_diagnostics(self, batch: list[dict[str, Any]]) -> None:
         # Straight to the engine, not through `_request` (see the sync client).
         await self._client.post(
-            f"/v1/tenants/{self.tenant}/diagnostics",
+            self._endpoint("diagnostics"),
             json={"events": batch},
             timeout=_diag.SEND_TIMEOUT_S,
         )
@@ -558,6 +608,9 @@ class AsyncOriginChain:
         # One logical request id per call, the same on every retry; the attempt
         # number changes. The engine records both next to its own request id.
         logical_id, headers = _diag.correlate(headers)
+        target = self._endpoint(path)
+        # Diagnostics report the path this call actually requested.
+        report_path = urlsplit(target).path
         report = self._diagnostics
         last_exc: Optional[Exception] = None
         for attempt in range(retries + 1):
@@ -565,7 +618,7 @@ class AsyncOriginChain:
             try:
                 resp = await self._client.request(
                     method,
-                    path,
+                    target,
                     params=params,
                     json=json,
                     content=content,
@@ -575,7 +628,7 @@ class AsyncOriginChain:
                 last_exc = e
                 if report is not None:
                     report.push(_diag.event(
-                        method=method, path=path, started=started,
+                        method=method, path=report_path, started=started,
                         logical_request_id=logical_id, attempt=attempt + 1, failure=e,
                     ))
                 network_wait = self._backoff(attempt)
@@ -588,10 +641,10 @@ class AsyncOriginChain:
                 raise err from e
 
             request_id = _diag.engine_request_id(resp.headers.get("X-OC-Request-Id"))
-            if resp.status_code < 400:
+            if 200 <= resp.status_code < 300:
                 if report is not None:
                     report.push(_diag.event(
-                        method=method, path=path, started=started,
+                        method=method, path=report_path, started=started,
                         logical_request_id=logical_id, attempt=attempt + 1,
                         status=resp.status_code, request_id=request_id,
                     ))
@@ -606,7 +659,7 @@ class AsyncOriginChain:
 
             if report is not None:
                 report.push(_diag.event(
-                    method=method, path=path, started=started,
+                    method=method, path=report_path, started=started,
                     logical_request_id=logical_id, attempt=attempt + 1,
                     status=resp.status_code, request_id=request_id,
                     code=_diag.error_code(_json_or_none(resp)),

@@ -9,8 +9,11 @@ apply to these methods.
 # mypy: disable-error-code="no-any-return"
 
 from __future__ import annotations
+
+from ._paths import segment
 import json as _json
 from typing import TYPE_CHECKING, Any, List, Literal, Mapping, Optional, Sequence
+from . import _connect
 from .models import (
     CentroidsPreview,
     FacetBucket,
@@ -101,7 +104,7 @@ class _AsyncSqlNamespace:
         payload = (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/sql",
+                "sql",
                 json=body,
                 retry_safe=retry_safe,
                 headers={"Idempotency-Key": idempotency_key}
@@ -156,7 +159,7 @@ class _AsyncSqlNamespace:
         payload = (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/sql/materialized-views",
+                "sql/materialized-views",
                 json=body,
             )
         ).json()
@@ -170,7 +173,7 @@ class _AsyncSqlNamespace:
         payload = (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/sql/materialized-views/{name}/refresh",
+                f"sql/materialized-views/{segment(name)}/refresh",
             )
         ).json()
         return MaterializedViewRefreshResult._from_payload(payload)
@@ -183,26 +186,46 @@ class _AsyncSqlNamespace:
         payload = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/sql/materialized-views/{name}",
+                f"sql/materialized-views/{segment(name)}",
             )
         ).json()
         return MaterializedViewRows._from_payload(payload)
 
-    async def execute(self, stmt: str) -> SqlExecResult:
-        """Submit INSERT or DELETE and preserve server-reported execution counts.
+    async def execute(
+        self, stmt: str, params: Optional[Sequence[Any]] = None, *,
+        retry_safe: bool = False, idempotency_key: Optional[str] = None,
+    ) -> SqlExecResult:
+        """Execute SQL and retain counts, RETURNING rows and batch results.
 
-        A missing count is ``None``: older engines can return a translation
-        without executing it, and transaction buffering does not prove a
-        commit. No follow-up row write is issued automatically.
+        Parameters bind positionally. Writes are not replayed automatically.
+        A batch failure raises OCBatchError with all available partial results.
         """
-        payload = (
-            await self._p._request(
-                "POST",
-                f"/v1/tenants/{self._p.tenant}/sql",
-                json={"sql": stmt},
-            )
-        ).json()
-        return _decode_sql_exec_response(payload)
+        body: dict[str, Any] = {"sql": stmt}
+        if params is not None:
+            body["params"] = _positional_params(params)
+        response = await self._p._request(
+            "POST", "sql", json=body, retry_safe=retry_safe,
+            headers={"Idempotency-Key": idempotency_key} if idempotency_key else None,
+        )
+        try:
+            result = _decode_sql_exec_response(response.json())
+        except ValueError as exc:
+            from .errors import OCProtocolError
+            raise OCProtocolError(str(exc), status=response.status_code) from exc
+        if result.failed:
+            from .errors import OCBatchError
+            error = OCBatchError(result)
+            error.request_id = response.headers.get("X-OC-Request-Id")
+            raise error
+        return result
+
+    async def run(
+        self, statement: str, params: Optional[Sequence[Any]] = None, *,
+        retry_safe: bool = False, idempotency_key: Optional[str] = None,
+    ) -> SqlExecResult:
+        """Run any SQL statement or batch and return the complete result."""
+        return await self.execute(statement, params, retry_safe=retry_safe,
+                                   idempotency_key=idempotency_key)
 
 
 class _AsyncVectorNamespace:
@@ -215,6 +238,14 @@ class _AsyncVectorNamespace:
 
     def __init__(self, parent: "AsyncOriginChain") -> None:
         self._p = parent
+
+    async def search(
+        self, table: str, query: List[float], k: int = 10,
+        metric: Literal["cosine", "dot", "l2", "manhattan"] = "cosine",
+        filter: Optional[Mapping[str, Any]] = None, nprobe: Optional[int] = None,
+    ) -> list[VectorHitV2]:
+        """Search for the nearest vectors. Alias of topk."""
+        return await self.topk(table, query, k, metric, filter, nprobe)
 
     async def put(
         self,
@@ -233,7 +264,7 @@ class _AsyncVectorNamespace:
         (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/vector/{table}/put",
+                f"vector/{segment(table)}/put",
                 json=body,
             )
         )
@@ -263,7 +294,7 @@ class _AsyncVectorNamespace:
         hits = (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/vector/{table}/topk",
+                f"vector/{segment(table)}/topk",
                 json=body,
             )
         ).json()
@@ -295,7 +326,7 @@ class _AsyncVectorNamespace:
         payload = (
             await self._p._request(
                 "DELETE",
-                f"/v1/tenants/{self._p.tenant}/vector/{table}/{vec_id}",
+                f"vector/{segment(table)}/{segment(vec_id)}",
                 params=params or None,
             )
         ).json()
@@ -322,7 +353,7 @@ class _AsyncVectorNamespace:
         payload = (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/vector/{table}/delete-bulk",
+                f"vector/{segment(table)}/delete-bulk",
                 json=body,
             )
         ).json()
@@ -347,7 +378,7 @@ class _AsyncVectorNamespace:
         payload = (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/vector/{table}/install-centroids",
+                f"vector/{segment(table)}/install-centroids",
                 json=body,
             )
         ).json()
@@ -386,7 +417,7 @@ class _AsyncVectorNamespace:
         payload = (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/vector/{table}/train-and-install-centroids",
+                f"vector/{segment(table)}/train-and-install-centroids",
                 json=body,
             )
         ).json()
@@ -402,7 +433,7 @@ class _AsyncVectorNamespace:
         payload = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/vector/{table}/centroids",
+                f"vector/{segment(table)}/centroids",
             )
         ).json()
         return CentroidsPreview._from_payload(payload)
@@ -417,7 +448,7 @@ class _AsyncVectorNamespace:
         payload = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/vector/{table}/ivf-rebalance-status",
+                f"vector/{segment(table)}/ivf-rebalance-status",
             )
         ).json()
         return IvfRebalanceStatus._from_payload(payload)
@@ -442,7 +473,7 @@ class _AsyncFtsNamespace:
         (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/fts/{table}/{field}",
+                f"fts/{segment(table)}/{segment(field)}",
                 json={"doc_id": doc_id, "text": text},
             )
         )
@@ -479,7 +510,7 @@ class _AsyncFtsNamespace:
         payload = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/fts/{table}/{field}",
+                f"fts/{segment(table)}/{segment(field)}",
                 params=params,
             )
         ).json()
@@ -490,13 +521,13 @@ class _AsyncFtsNamespace:
         #     facets?: {field: [{value, count}]}}   → enriched bm25
         if isinstance(payload, list):
             if not payload:
-                return FtsResult(hits=[], facets=None)
+                return FtsResult(hits=[], facets=None, raw=payload)
             first = payload[0]
             if isinstance(first, dict) and "score" in first:
                 hits = [FtsHitWithHighlights._from_ranked(h) for h in payload]
             else:
                 hits = [FtsHitWithHighlights._from_doc_id(str(d)) for d in payload]
-            return FtsResult(hits=hits, facets=None)
+            return FtsResult(hits=hits, facets=None, raw=payload)
         # Enriched envelope.
         hits_raw = payload.get("hits", [])
         hits = [FtsHitWithHighlights._from_enriched(h) for h in hits_raw]
@@ -507,7 +538,7 @@ class _AsyncFtsNamespace:
                 str(field_name): [FacetBucket._from_payload(b) for b in buckets]
                 for field_name, buckets in facets_raw.items()
             }
-        return FtsResult(hits=hits, facets=facets_out)
+        return FtsResult(hits=hits, facets=facets_out, raw=payload)
 
     async def install_synonyms(
         self,
@@ -518,7 +549,7 @@ class _AsyncFtsNamespace:
         (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/fts/{table}/{field}/synonyms",
+                f"fts/{segment(table)}/{segment(field)}/synonyms",
                 json={"synonyms": {k: list(v) for k, v in synonyms.items()}},
             )
         )
@@ -532,7 +563,7 @@ class _AsyncFtsNamespace:
         (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/fts/{table}/{field}/stopwords",
+                f"fts/{segment(table)}/{segment(field)}/stopwords",
                 json={"stopwords": list(stopwords)},
             )
         )
@@ -558,7 +589,7 @@ class _AsyncGraphNamespaceExtended:
         pks = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/neighbors",
+                f"graph/{segment(schema)}/neighbors",
                 params=params,
             )
         ).json()
@@ -577,7 +608,7 @@ class _AsyncGraphNamespaceExtended:
         hits = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/bfs",
+                f"graph/{segment(schema)}/bfs",
                 params=params,
             )
         ).json()
@@ -624,7 +655,7 @@ class _AsyncGraphNamespaceExtended:
         body = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/k-shortest",
+                f"graph/{segment(schema)}/k-shortest",
                 params=params,
             )
         ).json()
@@ -659,7 +690,7 @@ class _AsyncGraphNamespaceExtended:
         body = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/random-walk",
+                f"graph/{segment(schema)}/random-walk",
                 params=params,
             )
         ).json()
@@ -684,7 +715,7 @@ class _AsyncGraphNamespaceExtended:
         body = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/louvain",
+                f"graph/{segment(schema)}/louvain",
                 params=params,
             )
         ).json()
@@ -718,7 +749,7 @@ class _AsyncGraphNamespaceExtended:
         hits = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/pagerank",
+                f"graph/{segment(schema)}/pagerank",
                 params=params,
             )
         ).json()
@@ -744,7 +775,7 @@ class _AsyncGraphNamespaceExtended:
         rows = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/label_propagation",
+                f"graph/{segment(schema)}/label_propagation",
                 params=params,
             )
         ).json()
@@ -782,7 +813,7 @@ class _AsyncGraphNamespaceExtended:
         hits = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/node2vec/{rel}/topk",
+                f"graph/{segment(schema)}/node2vec/{rel}/topk",
                 params=params,
             )
         ).json()
@@ -822,7 +853,7 @@ class _AsyncGraphNamespaceExtended:
         payload = (
             await self._p._request(
                 "POST",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/graphsage",
+                f"graph/{segment(schema)}/graphsage",
                 json=body,
             )
         ).json()
@@ -851,7 +882,7 @@ class _AsyncGraphNamespaceExtended:
         hits = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/graphsage/{rel}/topk",
+                f"graph/{segment(schema)}/graphsage/{rel}/topk",
                 params=params,
             )
         ).json()
@@ -874,7 +905,7 @@ class _AsyncGraphNamespaceExtended:
         rows = (
             await self._p._request(
                 "GET",
-                f"/v1/tenants/{self._p.tenant}/graph/{schema}/betweenness",
+                f"graph/{segment(schema)}/betweenness",
                 params=params,
             )
         ).json()
@@ -888,6 +919,9 @@ class _AsyncGraphNamespaceExtended:
 
 class _AsyncAdminNamespace:
     """``client.admin`` — tenant-config admin surface (0.5 addition).
+
+    Deprecated: each method warns once with a ``FutureWarning`` and the
+    namespace is removed in the next minor release.
 
     Today's only routes are the per-tenant replication-mode config
     (install + read). Both are idempotent; install replaces the prior
@@ -911,6 +945,7 @@ class _AsyncAdminNamespace:
         the Raft consensus path that landed in Phase D; the server
         rejects with 400 when the variant's ``is_implemented`` returns
         false (the SDK relays as :class:`OCValidationError`)."""
+        _connect.warn_admin_namespace("AsyncOriginChain", "install_tenant_config", stacklevel=2)
         body: dict[str, Any] = {"replication_mode": replication_mode}
         payload = (
             await self._p._request(
@@ -927,6 +962,7 @@ class _AsyncAdminNamespace:
         default (with ``installed=None``) when no admin has ever
         installed a config for this tenant, so callers always see a
         truthful non-404 shape."""
+        _connect.warn_admin_namespace("AsyncOriginChain", "get_tenant_config", stacklevel=2)
         payload = (
             await self._p._request(
                 "GET",

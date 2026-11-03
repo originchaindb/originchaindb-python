@@ -32,14 +32,14 @@ def test_status_contract():
 @pytest.mark.parametrize('cls', [OriginChain, AsyncOriginChain])
 def test_invalid_retries_fail_before_transport(cls, retries):
     with pytest.raises(ValueError, match='max_retries'):
-        cls(base_url='http://test.invalid', bearer='test', tenant='test', max_retries=retries)
+        cls(url='https://test.invalid/v1/tenants/test', token='test', max_retries=retries)
 
 
 @pytest.mark.parametrize('budget', [0, -1, float('inf'), float('nan'), True])
 @pytest.mark.parametrize('cls', [OriginChain, AsyncOriginChain])
 def test_invalid_budget(cls, budget):
     with pytest.raises(ValueError, match='max_retry_time'):
-        cls(base_url='http://test.invalid', bearer='test', tenant='test', max_retry_time=budget)
+        cls(url='https://test.invalid/v1/tenants/test', token='test', max_retry_time=budget)
 
 
 @pytest.mark.parametrize('asynchronous', [False, True])
@@ -65,6 +65,7 @@ def test_attempts_headers_and_budget(asynchronous, method, safe, status, delay, 
     # Avoid unrelated TLS initialization: exercise the real request loop on MockTransport.
     db = cls.__new__(cls)
     db.max_retries, db.max_retry_time, db._diagnostics = 2, 0.5, None
+    db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
     db._backoff = lambda attempt: 0
     transport = httpx.MockTransport(handler)
     client = httpx.AsyncClient if asynchronous else httpx.Client
@@ -110,6 +111,7 @@ def test_public_sql_parameters_and_explicit_retries(asynchronous):
     cls = AsyncOriginChain if asynchronous else OriginChain
     db = cls.__new__(cls)
     db.max_retries, db.max_retry_time, db._diagnostics, db.tenant = 1, 30, None, 'test'
+    db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
     client = httpx.AsyncClient if asynchronous else httpx.Client
     db._client = client(base_url='http://test.invalid', transport=httpx.MockTransport(handler))
     if not asynchronous:
@@ -142,6 +144,7 @@ def test_async_cancellation_during_backoff_stops_retries():
 
         db = AsyncOriginChain.__new__(AsyncOriginChain)
         db.max_retries, db.max_retry_time, db._diagnostics = 3, 30, None
+        db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
         db._client = httpx.AsyncClient(base_url='http://test.invalid', transport=httpx.MockTransport(handler))
         async with db:
             task = asyncio.create_task(db._request('GET', '/health'))
@@ -168,6 +171,7 @@ def test_network_failure_retries_only_safe_methods(asynchronous, method):
     cls = AsyncOriginChain if asynchronous else OriginChain
     db = cls.__new__(cls)
     db.max_retries, db.max_retry_time, db._diagnostics = 2, 30, None
+    db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
     db._backoff = lambda attempt: 0
     client = httpx.AsyncClient if asynchronous else httpx.Client
     db._client = client(base_url='http://test.invalid', transport=httpx.MockTransport(handler))
@@ -204,6 +208,7 @@ def test_retry_window_includes_time_spent_in_attempt(asynchronous):
     cls = AsyncOriginChain if asynchronous else OriginChain
     db = cls.__new__(cls)
     db.max_retries, db.max_retry_time, db._diagnostics = 3, 0.005, None
+    db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
     client = httpx.AsyncClient if asynchronous else httpx.Client
     db._client = client(base_url='http://test.invalid', transport=httpx.MockTransport(handler))
 
