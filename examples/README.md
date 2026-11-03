@@ -1,4 +1,17 @@
-# Run a query
+# Examples
+
+The [catalog program](catalog.py) creates `sdk_examples.products`, writes
+two products, and demonstrates SQL, vector search, full-text search, and graph
+neighbors. It uses [products.toml](products.toml). Run it only against a development
+database after setting `OC_URL` and `OC_TOKEN`:
+
+```sh
+python examples/catalog.py
+```
+
+See the [main README](../README.md#product-catalog-example) for setup and explanations.
+
+## Read-only query commands
 
 From the repository root, install/build the local SDK:
 

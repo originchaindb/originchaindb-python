@@ -43,6 +43,8 @@ jobs:
         run: pytest tests -q
       - name: HTTP contract
         run: python tests/contract/run.py -- python tests/consumer.py
+      - name: Check example syntax
+        run: python -m py_compile examples/catalog.py
       - name: Build
         run: python -m build
       - name: Fresh package installation
