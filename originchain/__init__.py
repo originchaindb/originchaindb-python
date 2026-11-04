@@ -27,6 +27,7 @@ are also typed first-class. See :class:`OriginChain.sql`,
 namespace.
 """
 
+from .integration import RequestEvent, OCCredentialError, RowDecodeError, map_rows
 from ._query_metrics import QueryMetricsBucket, QueryMetricsResponse
 from .client import OriginChain
 from .async_client import AsyncOriginChain
@@ -85,6 +86,7 @@ Client = OriginChain
 AsyncClient = AsyncOriginChain
 
 __all__ = [
+    "RequestEvent", "OCCredentialError", "RowDecodeError", "map_rows",
     "Client",
     "AsyncClient",
     "OriginChain",

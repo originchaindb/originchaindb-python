@@ -17,8 +17,13 @@ way, the SDK gets bumped major.
 
 from __future__ import annotations
 
+from .integration import map_rows as _map_rows
+from typing import Callable, TypeVar
+
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Tuple, Union
+
+_RowT = TypeVar("_RowT")
 
 
 # ─────────────────────────── SQL ───────────────────────────
@@ -253,6 +258,11 @@ class SqlResult:
     column_types: Optional[dict[str, str]] = None
 
 
+    def map_rows(self, decode: Callable[[Mapping[str, Any]], _RowT]) -> list[_RowT]:
+        """Map independent row copies using an application decoder or validator."""
+        return _map_rows(self.rows, decode)
+
+
 def _decode_sql_result(payload: Mapping[str, Any]) -> SqlResult:
     if payload.get("kind") not in (None, "select"):
         from .errors import OCValidationError
@@ -296,6 +306,11 @@ class SqlExecResult:
         """Whether this result or a nested statement reports a failure."""
         return (self.stopped_on_error or self.kind == "error" or "error" in self.raw
                 or any(result.failed for result in self.results))
+
+
+    def map_rows(self, decode: Callable[[Mapping[str, Any]], _RowT]) -> list[_RowT]:
+        """Map independent row copies using an application decoder or validator."""
+        return _map_rows(self.rows, decode)
 
 
 def _decode_sql_exec_response(payload: Mapping[str, Any]) -> SqlExecResult:

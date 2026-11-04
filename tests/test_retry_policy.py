@@ -62,14 +62,12 @@ def test_attempts_headers_and_budget(asynchronous, method, safe, status, delay, 
         return httpx.Response(status, json={'error': 'busy'}, headers={'Retry-After': delay})
 
     cls = AsyncOriginChain if asynchronous else OriginChain
-    # Avoid unrelated TLS initialization: exercise the real request loop on MockTransport.
-    db = cls.__new__(cls)
+    # Exercise the public constructor and real request loop with an injected transport.
+    db = cls(url="https://test.invalid/v1/tenants/test", token="test-only",
+             transport=httpx.MockTransport(handler), verify=False)
     db.max_retries, db.max_retry_time, db._diagnostics = 2, 0.5, None
     db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
     db._backoff = lambda attempt: 0
-    transport = httpx.MockTransport(handler)
-    client = httpx.AsyncClient if asynchronous else httpx.Client
-    db._client = client(base_url='http://test.invalid', transport=transport)
 
     async def run():
         try:
@@ -109,11 +107,10 @@ def test_public_sql_parameters_and_explicit_retries(asynchronous):
                               headers={'Retry-After': '0'})
 
     cls = AsyncOriginChain if asynchronous else OriginChain
-    db = cls.__new__(cls)
+    db = cls(url="https://test.invalid/v1/tenants/test", token="test-only",
+             transport=httpx.MockTransport(handler), verify=False)
     db.max_retries, db.max_retry_time, db._diagnostics, db.tenant = 1, 30, None, 'test'
     db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
-    client = httpx.AsyncClient if asynchronous else httpx.Client
-    db._client = client(base_url='http://test.invalid', transport=httpx.MockTransport(handler))
     if not asynchronous:
         db.sql = _SqlNamespace(db)
 
@@ -142,13 +139,13 @@ def test_async_cancellation_during_backoff_stops_retries():
             reached.set()
             return httpx.Response(503, headers={'Retry-After': '20'})
 
-        db = AsyncOriginChain.__new__(AsyncOriginChain)
+        db = AsyncOriginChain(url="https://test.invalid/v1/tenants/test", token="test-only",
+                              transport=httpx.MockTransport(handler), verify=False)
         db.max_retries, db.max_retry_time, db._diagnostics = 3, 30, None
         db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
-        db._client = httpx.AsyncClient(base_url='http://test.invalid', transport=httpx.MockTransport(handler))
         async with db:
             task = asyncio.create_task(db._request('GET', '/health'))
-            await reached.wait()
+            await asyncio.wait_for(reached.wait(), timeout=2)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
@@ -169,12 +166,11 @@ def test_network_failure_retries_only_safe_methods(asynchronous, method):
         return httpx.Response(200, json={'ok': True})
 
     cls = AsyncOriginChain if asynchronous else OriginChain
-    db = cls.__new__(cls)
+    db = cls(url="https://test.invalid/v1/tenants/test", token="test-only",
+             transport=httpx.MockTransport(handler), verify=False)
     db.max_retries, db.max_retry_time, db._diagnostics = 2, 30, None
     db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
     db._backoff = lambda attempt: 0
-    client = httpx.AsyncClient if asynchronous else httpx.Client
-    db._client = client(base_url='http://test.invalid', transport=httpx.MockTransport(handler))
 
     async def run():
         async with db:
@@ -206,11 +202,10 @@ def test_retry_window_includes_time_spent_in_attempt(asynchronous):
         return httpx.Response(503, headers={'Retry-After': '0'})
 
     cls = AsyncOriginChain if asynchronous else OriginChain
-    db = cls.__new__(cls)
+    db = cls(url="https://test.invalid/v1/tenants/test", token="test-only",
+             transport=httpx.MockTransport(handler), verify=False)
     db.max_retries, db.max_retry_time, db._diagnostics = 3, 0.005, None
     db.url, db._origin = 'https://test.invalid/v1/tenants/test', 'https://test.invalid'
-    client = httpx.AsyncClient if asynchronous else httpx.Client
-    db._client = client(base_url='http://test.invalid', transport=httpx.MockTransport(handler))
 
     async def run():
         async with db:

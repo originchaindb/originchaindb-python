@@ -32,7 +32,7 @@ def async_client_factory(monkeypatch):
 
     def build(handler, **options):
         def factory(**kwargs):
-            client = real(**kwargs, transport=httpx.MockTransport(handler))
+            client = real(**{**kwargs, "transport": httpx.MockTransport(handler)})
             created.append(client)
             return client
 

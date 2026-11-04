@@ -36,8 +36,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage      = "https://originchain.ai"
-Documentation = "https://originchain.ai/docs"
+Homepage      = "https://originchaindb.com"
+Documentation = "https://originchaindb.com/docs"
 Source        = "https://github.com/originchaindb/originchaindb-python"
 Issues        = "https://github.com/originchaindb/originchaindb-python/issues"
 

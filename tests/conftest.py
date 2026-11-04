@@ -86,7 +86,7 @@ def mock_client(request: Any, monkeypatch: Any) -> Iterator[Any]:
 
     def build(handler: Callable[[httpx.Request], httpx.Response]) -> Any:
         monkeypatch.setattr(httpx, http_name, lambda **kw: http_cls(
-            **kw, transport=httpx.MockTransport(handler)
+            **{**kw, "transport": httpx.MockTransport(handler)}
         ))
         client = cls(url="https://test.invalid/v1/tenants/01HX1TESTTENANTXXXXXXXXXX1", token="test-bearer", max_retries=0, verify=False)
         clients.append(client)

@@ -22,7 +22,7 @@ def test_sync_identity_is_sent_with_bearer_on_reads_and_writes(monkeypatch):
         def reply(request):
             requests.append(request)
             return httpx.Response(200, json={"ok": True})
-        return real(**kwargs, transport=httpx.MockTransport(reply))
+        return real(**{**kwargs, "transport": httpx.MockTransport(reply)})
     monkeypatch.setattr(httpx, "Client", factory)
     with OriginChain(url="https://engine.invalid/v1/tenants/tenant", token="bearer",
                      db_user="alice", db_key="secret") as client:
@@ -44,7 +44,7 @@ async def test_async_identity_and_bearer_only_remain_separate(monkeypatch):
         def reply(request):
             requests.append(request)
             return httpx.Response(200, json={"ok": True})
-        return real(**kwargs, transport=httpx.MockTransport(reply))
+        return real(**{**kwargs, "transport": httpx.MockTransport(reply)})
     monkeypatch.setattr(httpx, "AsyncClient", factory)
     for kwargs in [dict(db_user="alice", db_key="secret"), {}]:
         async with AsyncOriginChain(url="https://engine.invalid/v1/tenants/tenant", token="bearer", **kwargs) as client:

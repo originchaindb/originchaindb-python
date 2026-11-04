@@ -214,6 +214,7 @@ def resolve_args(
     tenant: Optional[str],
     *,
     stacklevel: int,
+    credential_optional: bool = False,
 ) -> Tuple[str, str, Optional[str]]:
     """``(url, token, old_tenant)`` from constructor arguments.
 
@@ -228,6 +229,8 @@ def resolve_args(
         )
     if token is not None and bearer is not None:
         raise OCConfigError("pass token= alone (bearer= is deprecated)")
+    if credential_optional and (token is not None or bearer is not None):
+        raise OCConfigError("pass token_provider or token, not both")
     old_tenant: Optional[str] = None
     if url is None:
         if base_url is None and tenant is None:
@@ -247,6 +250,8 @@ def resolve_args(
         )
         url = _address_from_old_parts(base_url, tenant)
         old_tenant = tenant
+    if credential_optional:
+        return check_url(url, name="url"), "", old_tenant
     if token is None:
         if bearer is None:
             raise TypeError(

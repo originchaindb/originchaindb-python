@@ -35,6 +35,9 @@ from importlib.util import find_spec
 # originchain` keeps HTTP/1.1 so existing installs don't break.
 _HTTP2_AVAILABLE = find_spec("h2") is not None
 
+from .integration import RequestEvent, OCCredentialError, observe
+from typing import Callable
+
 from . import _connect
 from . import _diagnostics as _diag
 from . import _retry
@@ -323,6 +326,9 @@ class OriginChain:
         *,
         url: Optional[str] = None,
         token: Optional[str] = None,
+        token_provider: Callable[[], str] | None = None,
+        on_request: Callable[[RequestEvent], None] | None = None,
+        transport: httpx.BaseTransport | None = None,
         timeout: float = DEFAULT_TIMEOUT_S,
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_retry_time: float = _retry.DEFAULT_MAX_RETRY_TIME,
@@ -339,7 +345,7 @@ class OriginChain:
         # `base_url=` + `tenant=`, `bearer=` and `db_user=` + `db_key=` are
         # deprecated: they still work for one release, warning once each.
         url, token, old_tenant = _connect.resolve_args(
-            "OriginChain", url, token, base_url, bearer, tenant, stacklevel=2,
+            "OriginChain", url, token, base_url, bearer, tenant, stacklevel=2, credential_optional=token_provider is not None,
         )
         _retry.validate_options(max_retries, max_retry_time)
         identity = identity_headers(db_user, db_key)
@@ -350,6 +356,9 @@ class OriginChain:
         self._origin = _connect.origin_of(url)
         #: Deprecated: the address's origin. Kept for one release.
         self.base_url = self._origin
+        self._token_provider = token_provider
+        self._on_request = on_request
+        self._provider_timeout = timeout
         self.token = token
         #: Deprecated alias of :attr:`token`. Kept for one release.
         self.bearer = token
@@ -365,11 +374,13 @@ class OriginChain:
             base_url=self.url,
             timeout=timeout,
             verify=verify,
+            transport=transport,
+            follow_redirects=False,
             http2=_HTTP2_AVAILABLE,
             limits=_pool_limits(keepalive_expiry),
             headers={
                 **identity,
-                "Authorization": f"Bearer {token}",
+                **({"Authorization": f"Bearer {token}"} if token else {}),
                 "User-Agent": user_agent or "originchaindb-python/1.0.0rc1",
             },
         )
@@ -398,6 +409,8 @@ class OriginChain:
         access token. Raises :class:`OCConfigError` (an :class:`OCError`) if
         either is missing or refused. Set them from your secrets manager; do
         not commit them. Pass other options as keyword arguments."""
+        if kwargs.get("token_provider") is not None:
+            return cls(url=_connect.check_url(os.environ.get("OC_URL")), **kwargs)
         url, token = _connect.resolve_env(os.environ, stacklevel=2)
         return cls(url=url, token=token, **kwargs)
 
@@ -673,9 +686,14 @@ class OriginChain:
     def _send_diagnostics(self, batch: list[dict[str, Any]]) -> None:
         # Straight to the engine, not through `_request`: a report never
         # reports itself, retries, or carries correlation headers.
+        auth: dict[str, str] = {}
+        if self._token_provider is not None:
+            value = self._token_provider()
+            auth["Authorization"] = "Bearer " + _connect.check_token(value)
         self._client.post(
             self._endpoint("diagnostics"),
             json={"events": batch},
+            headers=auth,
             timeout=_diag.SEND_TIMEOUT_S,
         )
 
@@ -688,6 +706,39 @@ class OriginChain:
     # ── Internal: retry + error mapping ───────────────────────────────
 
     def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict[str, Any]] = None,
+        json: Any = None,
+        content: Optional[bytes] = None,
+        headers: Optional[dict[str, str]] = None,
+        retry_safe: bool | None = None,
+    ) -> httpx.Response:
+        started = time.perf_counter()
+        response: httpx.Response | None = None
+        failure: BaseException | None = None
+        try:
+            if self._token_provider is not None:
+                try:
+                    value = self._token_provider()
+                    current = _connect.check_token(value)
+                except Exception:
+                    raise OCCredentialError("credential provider failed") from None
+                supplied = httpx.Headers(headers or {})
+                supplied["Authorization"] = "Bearer " + current
+                headers = dict(supplied)
+            response = self._request_impl(method, path, params=params, json=json,
+                content=content, headers=headers, retry_safe=retry_safe)
+            return response
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            observe(self._on_request, method, path, started, response, failure)
+
+    def _request_impl(
         self,
         method: str,
         path: str,

@@ -53,9 +53,9 @@ def transport(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., list[ht
 
         real_sync, real_async = httpx.Client, httpx.AsyncClient
         monkeypatch.setattr(httpx, "Client", lambda **kw: real_sync(
-            **kw, transport=httpx.MockTransport(handler)))
+            **{**kw, "transport": httpx.MockTransport(handler)}))
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_async(
-            **kw, transport=httpx.MockTransport(handler)))
+            **{**kw, "transport": httpx.MockTransport(handler)}))
         return seen
 
     yield install

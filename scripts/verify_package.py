@@ -70,7 +70,7 @@ def verify_installed() -> None:
         return httpx.Response(200, json={"replication_mode": "active_passive"})
 
     real_sync = httpx.Client
-    httpx.Client = lambda **kwargs: real_sync(**kwargs, transport=httpx.MockTransport(handler))
+    httpx.Client = lambda **kwargs: real_sync(**{**kwargs, "transport": httpx.MockTransport(handler)})
     try:
         with OriginChain(url="https://engine.invalid/v1/tenants/test", token="test", verify=False) as client:
             assert client.query_metrics() == metrics
@@ -85,7 +85,7 @@ def verify_installed() -> None:
     finally:
         httpx.Client = real_sync
     real = httpx.AsyncClient
-    httpx.AsyncClient = lambda **kwargs: real(**kwargs, transport=httpx.MockTransport(handler))
+    httpx.AsyncClient = lambda **kwargs: real(**{**kwargs, "transport": httpx.MockTransport(handler)})
 
     async def smoke():
         async with AsyncOriginChain(
@@ -120,6 +120,19 @@ def verify_installed() -> None:
     finally:
         httpx.AsyncClient = real
     assert len(requests) == 16
+    events = []
+    with originchain.Client(
+        url="https://engine.invalid/opaque/database",
+        token_provider=lambda: "application-token",
+        transport=httpx.MockTransport(handler),
+        on_request=events.append,
+    ) as client:
+        result = client.sql.run("SELECT id FROM demo.rows")
+        assert result.map_rows(lambda row: row["id"]) == ["one"]
+    assert requests[-1].headers["Authorization"] == "Bearer application-token"
+    assert len(events) == 1 and isinstance(events[0], originchain.RequestEvent)
+    assert events[0].operation == "sql" and events[0].error_kind is None
+    assert "application-token" not in repr(events)
     print("Fresh wheel: typing marker, async namespaces, SQL value metadata, metrics and bulk DELETE passed")
 
 
