@@ -1,0 +1,46 @@
+name: Transport diagnosis
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: HTTPS tenant SQL endpoint (no credentials or query string)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transport-diagnosis
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Measure upload path with an intentionally invalid bearer
+        env:
+          DIAGNOSTIC_URL: ${{ inputs.url }}
+        shell: bash
+        run: python scripts/diagnose_transport.py --url "$DIAGNOSTIC_URL" --output transport-report.json
+      - name: Retain timings on success or failure
+        if: always()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5
+        with:
+          name: transport-${{ matrix.os }}
+          path: transport-report.json
+          if-no-files-found: error
+          retention-days: 14
