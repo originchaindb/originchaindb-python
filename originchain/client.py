@@ -36,7 +36,8 @@ from importlib.util import find_spec
 _HTTP2_AVAILABLE = find_spec("h2") is not None
 
 from .integration import RequestEvent, OCCredentialError, observe
-from typing import Callable
+from typing import Callable, Iterator
+from .iteration import BatchResult, RowPage, write_batches, page_query, decode_page
 
 from . import _connect
 from . import _diagnostics as _diag
@@ -192,6 +193,48 @@ class _Rows:
                 schema, chunk_buf, params, base_idem, chunk_no
             )
         return total
+
+    def write_batches(
+        self, schema: str, rows: Iterable[Mapping[str, Any]], *,
+        batch_size: int = 1000, max_bytes: int = 1024 * 1024,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> Iterator[BatchResult]:
+        """Lazily write bounded atomic batches; yield each confirmed input range."""
+        target = f"rows/{segment(schema)}/_batch"
+        def send(batch: list[dict[str, Any]]) -> Any:
+            return self._p._request("POST", target, json=batch, retry_safe=False).json()
+        return write_batches(send, rows, batch_size=batch_size, max_bytes=max_bytes, cancelled=cancelled)
+
+    def pages(
+        self, schema: str, key: str, *, page_size: int = 1000,
+        after: str | None = None, cancelled: Callable[[], bool] | None = None,
+    ) -> Iterator[RowPage]:
+        """Keyset pages over a unique immutable string key; not a snapshot."""
+        while True:
+            if cancelled is not None and cancelled():
+                import asyncio
+                raise asyncio.CancelledError("page iteration canceled")
+            statement, params = page_query(schema, key, page_size, after)
+            result = self._p.sql.query(statement, params)
+            page = decode_page(result.rows, key, page_size, after)
+            if not page.rows:
+                return
+            after = page.next_cursor
+            yield page
+            if after is None:
+                return
+
+    def scan(
+        self, schema: str, key: str, *, page_size: int = 1000,
+        after: str | None = None, cancelled: Callable[[], bool] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield rows with one page resident and no network prefetch."""
+        for page in self.pages(schema, key, page_size=page_size, after=after, cancelled=cancelled):
+            for row in page.rows:
+                if cancelled is not None and cancelled():
+                    import asyncio
+                    raise asyncio.CancelledError("row iteration canceled")
+                yield row
 
     def _send_batch(
         self,

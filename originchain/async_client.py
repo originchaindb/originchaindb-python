@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .integration import RequestEvent, OCCredentialError, observe
+from .iteration import BatchResult, RowPage, write_batches_async, page_query, decode_page
 from typing import Callable, Awaitable
 import inspect
 
@@ -170,6 +171,54 @@ class _AsyncRows:
         if chunk_buf:
             total += await self._send_batch(schema, chunk_buf, params, base_idem, chunk_no)
         return total
+
+    async def write_batches(
+        self, schema: str, rows: Iterable[Mapping[str, Any]] | AsyncIterable[Mapping[str, Any]], *,
+        batch_size: int = 1000, max_bytes: int = 1024 * 1024,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> AsyncIterator[BatchResult]:
+        """Lazily write bounded atomic batches; native task cancellation is preserved."""
+        target = f"rows/{segment(schema)}/_batch"
+        async def send(batch: list[dict[str, Any]]) -> Any:
+            response = await self._p._request("POST", target, json=batch, retry_safe=False)
+            return response.json()
+        stream = write_batches_async(send, rows, batch_size=batch_size, max_bytes=max_bytes, cancelled=cancelled)
+        try:
+            async for result in stream:
+                yield result
+        finally:
+            await stream.aclose()
+
+    async def pages(
+        self, schema: str, key: str, *, page_size: int = 1000,
+        after: str | None = None, cancelled: Callable[[], bool] | None = None,
+    ) -> AsyncIterator[RowPage]:
+        """Keyset pages over a unique immutable string key; not a snapshot."""
+        while True:
+            await asyncio.sleep(0)
+            if cancelled is not None and cancelled():
+                raise asyncio.CancelledError("page iteration canceled")
+            statement, params = page_query(schema, key, page_size, after)
+            result = await self._p.sql.query(statement, params)
+            page = decode_page(result.rows, key, page_size, after)
+            if not page.rows:
+                return
+            after = page.next_cursor
+            yield page
+            if after is None:
+                return
+
+    async def scan(
+        self, schema: str, key: str, *, page_size: int = 1000,
+        after: str | None = None, cancelled: Callable[[], bool] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield rows with one page resident and no network prefetch."""
+        async for page in self.pages(schema, key, page_size=page_size, after=after, cancelled=cancelled):
+            for row in page.rows:
+                await asyncio.sleep(0)
+                if cancelled is not None and cancelled():
+                    raise asyncio.CancelledError("row iteration canceled")
+                yield row
 
     async def _send_batch(
         self,

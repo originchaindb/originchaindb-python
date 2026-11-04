@@ -62,7 +62,7 @@ async def test_public_namespace_methods_and_arguments_match():
                     public.add("__call__")
                 for method in public:
                     sync_method, async_method = getattr(lhs, method), getattr(rhs, method)
-                    assert inspect.iscoroutinefunction(async_method), f"{name}.{method}"
+                    assert inspect.iscoroutinefunction(async_method) or inspect.isasyncgenfunction(async_method), f"{name}.{method}"
                     # Async batching additionally accepts AsyncIterable. Public
                     # names, defaults and keyword-only rules must still match.
                     def parameters(fn):
