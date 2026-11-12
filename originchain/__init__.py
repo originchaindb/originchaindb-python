@@ -24,7 +24,9 @@ Quick start::
 The four substrate-extension surfaces (SQL, vector, full-text, graph)
 are also typed first-class. See :class:`OriginChain.sql`,
 ``vector_topk`` / ``vector_put``, ``fts_search``, and the ``graph``
-namespace.
+namespace. Vector indexes (record operations: upsert, fetch, update,
+delete, dense / sparse / lexical / hybrid search, namespaces, jobs) are
+on ``vector_indexes``.
 """
 
 from .iteration import BatchResult, BatchWriteError, RowPage
@@ -32,6 +34,7 @@ from .integration import RequestEvent, OCCredentialError, RowDecodeError, map_ro
 from ._query_metrics import QueryMetricsBucket, QueryMetricsResponse
 from .client import OriginChain
 from .async_client import AsyncOriginChain
+from ._vector_indexes import UpsertBatchResult
 
 from .errors import (
     OCAuthError,
@@ -42,6 +45,7 @@ from .errors import (
     OCNotFoundError,
     OCPaymentRequiredError,
     OCRateLimitedError,
+    OCRecordApiNotEnabledError,
     OCReplicationDegraded,
     OCServerError,
     OCValidationError,
@@ -103,6 +107,7 @@ __all__ = [
     "OCPaymentRequiredError",
     "OCRateLimitedError",
     "OCServerError",
+    "OCRecordApiNotEnabledError",
     "OCValidationError",
     "OCReplicationDegraded",
     "OriginChainBadRequest",
@@ -140,6 +145,8 @@ __all__ = [
     "MaterializedViewRefreshResult",
     "MaterializedViewRows",
     "TenantConfigSnapshot",
+    # vector index record operations
+    "UpsertBatchResult",
     # weather-name removal
     "TenantConfiguration",
     "TenantUsage",

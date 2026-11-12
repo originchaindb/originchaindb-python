@@ -70,7 +70,7 @@ class _AwaitingProxy:
         if name == "close" and isinstance(self._target, AsyncOriginChain):
             return _AwaitingProxy(self._target.aclose, self._loop)
         value = getattr(self._target, name)
-        if callable(value) or name in {"schemas", "rows", "sql", "vector", "fts", "graph", "admin"}:
+        if callable(value) or name in {"schemas", "rows", "sql", "vector", "vector_indexes", "fts", "graph", "admin"}:
             return _AwaitingProxy(value, self._loop)
         return value
 

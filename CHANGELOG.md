@@ -20,4 +20,12 @@
 - Fresh application installation checks and signed CI artifact provenance.
 - Complete bulk/read/resume example and detailed recovery guidance.
 
+- Vector indexes on `vector_indexes` (sync and async): index create, describe, list,
+  configure, delete and statistics; namespaces; batched upsert with acknowledged ranges;
+  fetch, fetch by filter, list ids and count; update and delete by id, by filter or all;
+  jobs; dense, sparse, keyword and hybrid search with metadata filters.
+- Structured error envelopes populate `code`, `reason`, `details` and `retryable` on
+  `OCError`, and the error message is the envelope's message.
+- `OCRecordApiNotEnabledError` for a database that does not serve vector indexes.
+
 This candidate has not been published to package registries.

@@ -10,6 +10,8 @@ class. Specific subclasses let callers branch on retryability:
 - :class:`OCValidationError` (400) - DON'T retry, the request is malformed.
 - :class:`OCRateLimitedError` (429) - DO retry after ``Retry-After``.
 - :class:`OCServerError` (5xx) - MAY retry with backoff if idempotent.
+- :class:`OCRecordApiNotEnabledError` (501, a :class:`OCServerError`) -
+  DON'T retry, the database does not serve vector index record operations.
 - :class:`OCConfigError` - a connection setting was refused before any
   request was sent (for example a plain ``http://`` ``OC_URL``).
 - :class:`OCReplicationDegraded` - write succeeded, but sync-replication
@@ -35,6 +37,39 @@ class OCError(Exception):
         #: The id this client sent for the call (``X-OC-Logical-Request-Id``),
         #: the same on every retry of it.
         self.logical_request_id: str | None = None
+        # The structured error envelope:
+        # {"error": {"code", "message", "status", "retryable", "details"}}.
+        envelope = _envelope(body)
+        code = envelope.get("code")
+        details = envelope.get("details")
+        #: The envelope's machine-readable ``error.code`` (for example
+        #: ``"index_already_exists"``), when the engine answered with one.
+        self.code: Optional[str] = code if isinstance(code, str) else None
+        #: The envelope's ``error.details`` object, when present.
+        self.details: Optional[dict[str, Any]] = details if isinstance(details, dict) else None
+        reason = self.details.get("reason") if self.details is not None else None
+        #: ``error.details.reason`` (for example ``"exact_index_capacity"``).
+        #: Branch on ``code`` plus ``reason``, never on ``status`` alone.
+        self.reason: Optional[str] = reason if isinstance(reason, str) else None
+        retryable = envelope.get("retryable")
+        #: ``error.retryable``: ``True`` only when the identical request can
+        #: succeed later without changes.
+        self.retryable: Optional[bool] = retryable if isinstance(retryable, bool) else None
+
+
+def _envelope(body: Any) -> dict[str, Any]:
+    error = body.get("error") if isinstance(body, dict) else None
+    return error if isinstance(error, dict) else {}
+
+
+def _error_message(body: Any) -> Any:
+    """The message an error is raised with: a flat body's ``error`` text, or
+    a structured envelope's ``message`` (else its ``code``)."""
+    msg = body.get("error") if isinstance(body, dict) else str(body)
+    if isinstance(msg, dict):
+        text, code = msg.get("message"), msg.get("code")
+        msg = text if isinstance(text, str) and text else code if isinstance(code, str) else None
+    return msg
 
 
 class OCAuthError(OCError):
@@ -110,6 +145,25 @@ class OCRateLimitedError(OCError):
 
 class OCServerError(OCError):
     """5xx. Server-side failure; retryable for idempotent ops."""
+
+
+class OCRecordApiNotEnabledError(OCServerError):
+    """501 with ``reason == "record_api_not_enabled"``: this database does not
+    serve the vector index record operations (``client.vector_indexes``).
+    Not retryable: the same request keeps failing until the operations are
+    switched on for the database. The per-table ``client.vector`` calls are
+    not affected."""
+
+
+def _server_error_class(status: int, body: Any) -> type[OCServerError]:
+    details = _envelope(body).get("details")
+    if (
+        status == 501
+        and isinstance(details, dict)
+        and details.get("reason") == "record_api_not_enabled"
+    ):
+        return OCRecordApiNotEnabledError
+    return OCServerError
 
 
 class OCConfigError(OCError, ValueError):

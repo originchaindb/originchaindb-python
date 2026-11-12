@@ -51,8 +51,9 @@ from .errors import (
     OCPaymentRequiredError,
     OCRateLimitedError,
     OCReplicationDegraded,
-    OCServerError,
     OCValidationError,
+    _error_message,
+    _server_error_class,
 )
 from .models import (
     DijkstraResult,
@@ -261,6 +262,7 @@ from ._namespaces import (
     _SqlNamespace,
     _VectorNamespace,
 )
+from ._vector_indexes import _VectorIndexesNamespace
 
 
 class _Graph(_GraphNamespaceExtended):
@@ -436,6 +438,8 @@ class OriginChain:
         # both work off the same attribute.
         self.sql = _SqlNamespace(self)
         self.vector = _VectorNamespace(self)
+        # Record operations on vector indexes: `$OC_URL/vector-indexes/...`.
+        self.vector_indexes = _VectorIndexesNamespace(self)
         self.fts = _FtsNamespace(self)
         # 0.5: admin surface for the per-tenant replication-mode config
         # routes under `/v1/admin/*`, which live outside the database's
@@ -895,7 +899,7 @@ class OriginChain:
         except Exception:
             body = resp.text
 
-        msg = body.get("error") if isinstance(body, dict) else str(body)
+        msg = _error_message(body)
         status = resp.status_code
 
         if status in (401, 403):
@@ -922,7 +926,9 @@ class OriginChain:
                 body=body,
             )
         if 500 <= status < 600:
-            raise OCServerError(msg or f"server error {status}", status=status, body=body)
+            raise _server_error_class(status, body)(
+                msg or f"server error {status}", status=status, body=body
+            )
         raise OCError(msg or f"unexpected status {status}", status=status, body=body)
 
 

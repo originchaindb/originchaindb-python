@@ -166,6 +166,10 @@ for hit in hits:
 Each hit exposes an ID, score, optional metadata, and the original hit. Do not
 assume the score is a probability; its interpretation depends on the metric.
 
+These calls store vectors per table. For named indexes with namespaces, batch
+upserts, metadata filters, sparse, keyword and hybrid search, see
+[Vector indexes](#vector-indexes).
+
 ### Search text
 
 Index the description explicitly, then use ranked BM25 search. Search defaults
@@ -214,6 +218,100 @@ This excerpt uses `db`, `schema` and the lazy `rows` producer from the
 [complete example](examples/bulk_and_scan.py). See the [bulk and pagination guide](docs/bulk-and-pagination.md)
 for setup, reads, checkpoints, cancellation and recovery. Failed writes are never
 replayed automatically; paginated reads require a unique immutable string key.
+
+## Vector indexes
+
+`db.vector_indexes` holds the record operations on vector indexes. An index
+holds namespaces, and a namespace holds records. A record has an `id` and any
+of a dense vector (`values`), a sparse vector (`sparse_values`), flat
+`metadata` and declared `text` fields. Every call takes the index by its name
+or its `index_id`, and record calls always name a namespace (`"__default__"`
+is the default one). The async client has the same methods:
+`await adb.vector_indexes.search(...)`.
+
+```python
+vi = db.vector_indexes
+
+# Create an index. metric is "cosine", "dot", "l2" or "manhattan".
+vi.create_index("products", dimension=4, metric="cosine", sparse=True,
+                text_fields=[{"name": "body", "analyzer": "standard_en_v1"}])
+vi.describe_index("products")
+for index in vi.iter_indexes():
+    print(index["name"], index["state"])
+
+# Upsert replaces the whole record. The namespace is created on first write.
+vi.upsert("products", "catalog", [
+    {"id": "p1", "values": [0.1, 0.2, 0.3, 0.4],
+     "metadata": {"category": "tools", "price": 12.5},
+     "text": {"body": "steel claw hammer"}},
+    {"id": "p2", "values": [0.4, 0.3, 0.2, 0.1],
+     "sparse_values": {"indices": [3, 9], "values": [0.2, 0.5]},
+     "metadata": {"category": "garden"}},
+])
+
+# Dense search with a metadata filter.
+res = vi.search("products", "catalog", k=5, vector=[0.1, 0.2, 0.3, 0.4],
+                filter_expr={"category": {"$eq": "tools"}, "price": {"$lt": 20}},
+                include_metadata=True)
+for hit in res["hits"]:
+    print(hit["id"], hit["score"], hit.get("metadata"))
+
+# Hybrid search: dense + keyword (BM25), fused by reciprocal rank.
+vi.search("products", "catalog", k=5, vector=[0.1, 0.2, 0.3, 0.4],
+          lexical={"field": "body", "query": "hammer"})
+# Search by the stored vector of a record; or a sparse query.
+vi.search("products", "catalog", k=5, record_id="p1", quality="exact")
+vi.search("products", "catalog", k=5, sparse={"indices": [3], "values": [1.0]})
+
+got = vi.fetch("products", "catalog", ["p1", "p9"], include_values=True)
+# got["records"] is keyed by id; got["missing"] lists the ids not found.
+vi.update("products", "catalog", "p1", metadata_merge={"price": 11.0})
+vi.count("products", "catalog", {"category": {"$eq": "tools"}})
+for record_id in vi.iter_ids("products", "catalog"):
+    print(record_id)
+
+vi.delete("products", "catalog", ["p2"])
+job = vi.delete_by_filter("products", "catalog", {"category": {"$eq": "garden"}})
+vi.get_job("products", job["job_id"])        # poll until state is not queued/running
+vi.index_stats("products")
+vi.delete_namespace("products", "catalog")   # deletes every record in it
+vi.delete_index("products")                  # answers with state "deleting"
+```
+
+Things to know:
+
+- **Batching.** The engine accepts at most 1,000 records and 2,000,000 bytes
+  per upsert request. `upsert` reads its input lazily, sends it in requests
+  under both bounds, in order, each record exactly once, and returns
+  `{"upserted_count", "namespace_created", "batches", "receipts"}`. Each
+  request commits on its own. A failure raises `BatchWriteError` with the
+  input range that was not acknowledged (`offset`, `count`, and `outcome`
+  `not_sent` or `unknown`); every record before `offset` is written, and the
+  cause is in `__cause__`. Nothing is sent again automatically.
+  `upsert_batches` yields one result per acknowledged request instead.
+- **Search.** `k` is required. One query leg is a semantic (dense or sparse)
+  or keyword search; two or more legs are a hybrid search. `quality` is
+  `"fast"`, `"high_recall"` (the default) or `"exact"`. Scores are always
+  higher-is-better; `res["completeness"]` says whether an approximate leg may
+  have missed records. Search returns metadata only with
+  `include_metadata=True`; `fetch` returns it unless you turn it off.
+- **Filters.** `filter_expr` takes operators such as `$eq`, `$ne`, `$in`,
+  `$gt`, `$exists`, `$and` and `$or`; `filter` takes a plain equality map.
+  Pass at most one.
+- **Updates and deletes.** `update` changes one record in place and keeps the
+  fields it does not name. `update_by_filter` and `delete_by_filter` run as
+  background jobs; `dry_run=True` only reports how many records match.
+  Calling `delete_namespace` or `delete_all` is the confirmation the engine
+  asks for.
+- **Paging.** `iter_indexes`, `iter_namespaces`, `iter_ids` and
+  `iter_records` hold one page in memory and do not prefetch. They are not
+  snapshots.
+- **Errors and retries.** Failures raise the usual `OCError` classes. Branch on
+  `error.code` plus `error.reason`, not on `error.status` alone;
+  `error.details` holds the rest and `error.retryable` says whether the same
+  request can succeed later. A database that does not serve these operations
+  raises `OCRecordApiNotEnabledError` (a 501). With `max_retries` set, reads
+  are retried; writes never are.
 
 ## Understanding SQL results
 
