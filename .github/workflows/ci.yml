@@ -52,6 +52,8 @@ jobs:
         run: pytest tests -q
       - name: HTTP contract
         run: python tests/contract/run.py -- python tests/consumer.py
+      - name: Vector index HTTP contract
+        run: python tests/contract/vector_indexes.py -- python tests/vector_indexes_consumer.py
       - name: Resilience contract
         run: python tests/contract/resilience.py -- python tests/resilience.py
       - name: Check example syntax

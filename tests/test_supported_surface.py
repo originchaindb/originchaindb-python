@@ -10,6 +10,7 @@ def test_sync_supported_query_surface():
         assert callable(client.sql.query)
         assert callable(client.fts.search)
         assert callable(client.vector.topk)
+        assert callable(client.vector_indexes.search)
         assert callable(client.graph.neighbors_of)
 
 
@@ -20,4 +21,5 @@ async def test_async_supported_query_surface():
         assert callable(client.sql.query)
         assert callable(client.fts.search)
         assert callable(client.vector.topk)
+        assert callable(client.vector_indexes.search)
         assert callable(client.graph.neighbors_of)
